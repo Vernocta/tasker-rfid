@@ -1,0 +1,38 @@
+# Local development stack for Tasker RFID.
+# Postgres is the primary store (SPEC.md 2.4 — local-first).
+# Mosquitto is the MQTT broker the readers (and the simulator) publish to.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: tasker-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tasker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tasker}
+      POSTGRES_DB: ${POSTGRES_DB:-tasker}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tasker} -d ${POSTGRES_DB:-tasker}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: tasker-mosquitto
+    restart: unless-stopped
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+
+volumes:
+  postgres_data:
+  mosquitto_data:
+  mosquitto_log:

@@ -1,0 +1,28 @@
+# Runtime tuning. This file is SPEC.md section 8, verbatim.
+# Change values here, not in code.
+
+mode: hybrid                # box_level | pallet_level | hybrid
+
+rf:
+  tx_power_dbm: 25
+  session: 2
+
+filters:
+  quiet_period_ms: 2000
+  rssi_floor_dbm: -65
+  min_read_count: 3
+
+portals:
+  entrance:
+    antennas: [1, 2]
+    direction_mode: state_machine
+  exit:
+    antennas: [3, 4]
+    direction_mode: ir_gated
+    ir_gate_timeout_ms: 3000
+    require_session: true
+
+health:
+  no_read_alert_hours: 4
+  working_hours: "08:00-18:00"
+  timezone: "America/Argentina/Buenos_Aires"
