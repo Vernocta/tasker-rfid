@@ -15,11 +15,10 @@ import os
 import random
 import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-import yaml
 from dotenv import load_dotenv
 
+from ...config import antennas_for_portal
 from .model import (
     Read,
     Tag,
@@ -32,10 +31,6 @@ from .publisher import print_reads, publish_reads
 
 PORTALS = ["ENTRANCE", "EXIT"]
 
-# Antennas to fall back on if config/tasker.yaml cannot be read. Same values
-# as SPEC.md section 8, so the simulator still runs on a fresh checkout.
-DEFAULT_ANTENNAS = {"ENTRANCE": [1, 2], "EXIT": [3, 4]}
-
 PALLET_ATTENUATION_DB = 3.0
 """A pallet tag rides on the outside of the stack, so it reads nearly clean."""
 
@@ -46,27 +41,9 @@ PALLET_STAGGER_S = 0.25
 """Boxes on one pallet do not all cross the exact same instant."""
 
 
-def project_root() -> Path:
-    return Path(__file__).resolve().parents[4]
-
-
 def load_antennas(portal: str) -> list[int]:
     """Which antennas belong to this portal, from config/tasker.yaml."""
-    config_path = Path(
-        os.getenv("TASKER_CONFIG_PATH") or project_root() / "config" / "tasker.yaml"
-    )
-    try:
-        config = yaml.safe_load(config_path.read_text())
-        antennas = config["portals"][portal.lower()]["antennas"]
-        if antennas:
-            return list(antennas)
-    except (OSError, KeyError, TypeError, yaml.YAMLError):
-        print(
-            f"warning: could not read antennas for {portal} from {config_path}, "
-            f"using {DEFAULT_ANTENNAS[portal]}",
-            file=sys.stderr,
-        )
-    return DEFAULT_ANTENNAS[portal]
+    return antennas_for_portal(portal)
 
 
 def make_tid(rng: random.Random) -> str:
