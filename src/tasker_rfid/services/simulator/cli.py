@@ -170,12 +170,22 @@ def cmd_pallet(args: argparse.Namespace, rng: random.Random) -> tuple[list[Read]
     start = now_utc()
 
     pallet_tag = make_tag(args.tid, rng, attenuation_db=PALLET_ATTENUATION_DB)
-    box_tags = [
-        make_tag(None, rng, attenuation_db=rng.uniform(0, BOX_ATTENUATION_MAX_DB))
-        for _ in range(args.boxes)
-    ]
 
-    present = [tag for tag in box_tags if rng.random() >= args.miss_rate]
+    if args.box_tid:
+        # Named boxes: put exactly these tags on the pallet and read all of
+        # them. Leaving a registered box off the list is how a test stages a
+        # short pallet without relying on the random miss rate.
+        box_tags = [
+            make_tag(tid, rng, attenuation_db=rng.uniform(0, BOX_ATTENUATION_MAX_DB))
+            for tid in args.box_tid
+        ]
+        present = list(box_tags)
+    else:
+        box_tags = [
+            make_tag(None, rng, attenuation_db=rng.uniform(0, BOX_ATTENUATION_MAX_DB))
+            for _ in range(args.boxes)
+        ]
+        present = [tag for tag in box_tags if rng.random() >= args.miss_rate]
     missed = len(box_tags) - len(present)
 
     # The reader splits its attention across everything in the field at once.
@@ -193,8 +203,7 @@ def cmd_pallet(args: argparse.Namespace, rng: random.Random) -> tuple[list[Read]
 
     print(
         f"pallet {pallet_tag.tid} through {args.portal} on antennas {antennas}: "
-        f"{args.boxes} boxes declared, {len(present)} readable, {missed} missed "
-        f"(miss-rate {args.miss_rate})"
+        f"{len(box_tags)} boxes on the pallet, {len(present)} readable, {missed} missed"
         + (", one gate crossing (outbound)" if gates else ", no IR gate"),
         file=sys.stderr,
     )
@@ -290,6 +299,13 @@ def build_parser() -> argparse.ArgumentParser:
     pallet = subparsers.add_parser("pallet", help="a loaded pallet through a portal")
     pallet.add_argument("--tid", default=None, help="TID of the pallet itself")
     pallet.add_argument("--boxes", type=int, default=50, help="boxes on the pallet")
+    pallet.add_argument(
+        "--box-tid",
+        action="append",
+        default=[],
+        help="put a specific TID on the pallet (repeatable). Overrides --boxes "
+        "and --miss-rate: exactly these boxes are read.",
+    )
     pallet.add_argument(
         "--miss-rate",
         type=float,
