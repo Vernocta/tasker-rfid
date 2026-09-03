@@ -16,6 +16,7 @@ dependencies = [
 tasker-seed = "tasker_rfid.seed:main"
 sim = "tasker_rfid.services.simulator.cli:main"
 tasker-ingest = "tasker_rfid.services.ingest.service:main"
+tasker-debouncer = "tasker_rfid.services.debouncer.service:main"
 
 [dependency-groups]
 dev = [
