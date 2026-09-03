@@ -5,8 +5,8 @@ RFID-based finished-goods stock control for Tasker S.A.
 **`SPEC.md` in this directory is the authoritative specification.** If the code
 and the spec disagree, the spec wins and the code is a bug.
 
-Current state: **build order step 1 of 10** — scaffold, containers, and database
-schema. No services are implemented yet.
+Current state: **build order step 2 of 10** — scaffold, containers, database
+schema, and seed data. No services are implemented yet.
 
 ---
 
@@ -117,6 +117,25 @@ step 4 and read the error.
 
 ---
 
+**6. Load the SKU and customer lists**
+
+```bash
+uv run tasker-seed
+```
+
+*Expect:*
+
+```
+skus:      4 rows loaded from .../seeds/skus.csv
+customers: 3 rows loaded from .../seeds/customers.csv
+database now holds 4 skus and 3 customers
+```
+
+Safe to run as many times as you like — see *Editing the SKU and customer
+lists* below.
+
+---
+
 ## Everyday commands
 
 ```bash
@@ -139,6 +158,44 @@ Type `\dt` to list tables, `\d containers` to inspect one, `\q` to quit.
 
 `docker compose down -v` deletes the database volume and all its data. Do not
 run it unless you mean to start clean.
+
+---
+
+## Editing the SKU and customer lists
+
+The SKUs and customers live in two spreadsheets in `seeds/`:
+
+| File | Columns |
+|---|---|
+| `seeds/skus.csv` | `sku_id, name, family, units_per_box, tag_class, active` |
+| `seeds/customers.csv` | `customer_id, name, active` |
+
+Open them in Excel, Numbers or Google Sheets, edit, **save as CSV** (keep the
+same file name), then run:
+
+```bash
+uv run tasker-seed
+```
+
+Rules the script enforces — it refuses the whole file and writes nothing if
+any row breaks one, and tells you which row:
+
+- `sku_id` / `customer_id` — required, must be unique. This is the permanent
+  identifier; do not change it once the SKU or customer is in use.
+- `family` — one of `cones`, `cups`, `powder`, `bag_in_box`, `tetra`, `sauce`,
+  `accessories`.
+- `units_per_box` — whole number above 0.
+- `tag_class` — leave blank until the RF test decides it (SPEC.md §11); then
+  `paper`, `paper_long` or `on_metal`.
+- `active` — `true` or `false` (`yes`/`no` also accepted).
+
+Running the script again is safe. A row whose ID already exists is **updated**
+to match the spreadsheet; a new ID is **added**; nothing is ever duplicated.
+
+**Deleting a row from the CSV does not delete it from the database.** Old
+stock and dispatch history may point at that SKU or customer, and removing it
+would break the consumption report. To retire something, set `active` to
+`false` instead.
 
 ---
 
@@ -167,6 +224,8 @@ config/tasker.yaml           runtime tuning (SPEC.md §8)
 alembic.ini                  migration tool config
 migrations/versions/         database schema, one file per change
 scripts/check_schema.sql     the "did it work" query above
+seeds/                       SKU and customer spreadsheets (CSV)
+src/tasker_rfid/seed.py      loads seeds/ into the database
 src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulator
 web/                         dashboard
 ```
