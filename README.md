@@ -5,8 +5,9 @@ RFID-based finished-goods stock control for Tasker S.A.
 **`SPEC.md` in this directory is the authoritative specification.** If the code
 and the spec disagree, the spec wins and the code is a bug.
 
-Current state: **build order step 2 of 10** — scaffold, containers, database
-schema, and seed data. No services are implemented yet.
+Current state: **build order step 3 of 10** — scaffold, containers, database
+schema, seed data, and the simulator. The ingest service is not built yet, so
+the simulator's messages are published but nothing is listening to them.
 
 ---
 
@@ -146,6 +147,8 @@ docker compose logs -f    # watch what they are doing
 uv run alembic upgrade head       # apply any new migrations
 uv run alembic current            # which migration is applied
 uv run alembic downgrade base     # drop all tables (destroys data)
+
+uv run pytest                     # run the automated tests
 ```
 
 Open a database prompt:
@@ -199,6 +202,122 @@ would break the consumption report. To retire something, set `active` to
 
 ---
 
+## The simulator
+
+A fake RFID reader. It publishes to the same MQTT broker a real reader will,
+in the same format, so everything else can be built and tested before any
+hardware exists (SPEC.md §5.1).
+
+Add `--dry-run` to any command to print the messages instead of publishing
+them. That needs no broker and is the quickest way to see what is going on.
+
+```bash
+uv run sim box     --tid A7F3 --portal ENTRANCE     # one box through a portal
+uv run sim pallet  --boxes 50 --portal EXIT --miss-rate 0.08
+uv run sim stray   --tid B21C --duration 600        # box parked near an antenna
+uv run sim reverse --tid C99A --portal ENTRANCE     # carried back out
+uv run sim burst   --count 900                      # throughput test
+```
+
+*Expect*, for the first one:
+
+```
+box A7F3 through ENTRANCE on antennas [1, 2]
+published 193 reads to tasker/reads/... in 1.79s (108 reads/sec)
+```
+
+Nearly two hundred messages for one box is correct, not a bug — see below.
+
+*If it says* `could not reach the MQTT broker`: the containers are not
+running. `docker compose up -d`.
+
+Useful flags on every command:
+
+| Flag | What it does |
+|---|---|
+| `--dry-run` | print the messages, publish nothing, no broker needed |
+| `--speed N` | `1` is real time; `60` compresses a minute into a second; `0` is as fast as possible |
+| `--seed N` | repeat a run exactly — same seed, same reads |
+| `--portal` | `ENTRANCE` or `EXIT`; picks the antennas from `config/tasker.yaml` |
+
+`sim stray --duration 600` takes ten real minutes at default speed. Add
+`--speed 60` to watch it in ten seconds.
+
+To watch the messages arriving while a command runs, open a second terminal:
+
+```bash
+docker compose exec mosquitto mosquitto_sub -t 'tasker/reads/#' -q 1
+```
+
+### The message format
+
+One JSON message per read, published on `tasker/reads/<reader_id>`:
+
+```json
+{
+  "tid": "E28011702000A7F312345678",
+  "epc": "3034F4A2B1C80D0000000001",
+  "reader_id": "READER-EXIT",
+  "antenna_id": 3,
+  "rssi": -52,
+  "read_at": "2026-09-03T14:22:31.482000+00:00"
+}
+```
+
+Those six fields are exactly the six columns of `reads_raw` (SPEC.md §3).
+SPEC.md §4 says the ingest service must do nothing but validate and insert,
+so the message deliberately carries nothing that needs interpreting first.
+
+**`portal` is not in the message, deliberately.** A reader knows it has
+antennas 1 to 4; it does not know the warehouse calls antennas 3 and 4 "the
+exit". `reads_raw` has no portal column either — portal first appears on
+`observations`, once `config/tasker.yaml` has been consulted. The simulator
+reads that same file to decide which antennas to fire.
+
+Messages are published at **QoS 1** (at-least-once). A warehouse network
+drops out and a lost dispatch read is an unrecoverable inventory error
+(SPEC.md §2.4), so losing a message is unacceptable. A *duplicated* message
+is harmless — the state machine in SPEC.md §2.3 makes seeing the same tag
+twice a no-op. QoS 1 trades duplicates, which cost nothing, for losses,
+which cost everything.
+
+### Why one box produces two hundred messages
+
+A real reader does not report "a box went past". It interrogates its
+antennas dozens of times a second and reports every single time a tag
+answers. One box through a portal in under two seconds produces roughly
+50–300 separate reads, and their signal strength rises as the box approaches
+and falls as it leaves. Collapsing that back into one business event is the
+entire job of the debouncer and the state engine. If the simulator emitted
+one tidy message per tag, every test written against it would be testing a
+fiction.
+
+So the simulator models:
+
+- **Rise and fall.** Signal peaks at the closest point of approach and drops
+  about 25 dB by the edges of the field, plus noise.
+- **Weak signal means missed reads.** A passive tag runs on the reader's own
+  energy, so the edges of a pass are sparse and the middle is dense. Reads
+  below about −75 dBm do not happen at all.
+- **A shared attention budget.** A reader time-slices between tags. One tag
+  alone is read constantly; fifty boxes on a pallet each get a fraction. This
+  is why `sim pallet --boxes 50` produces about 1,500 reads rather than
+  50 × 200.
+- **Shadowing.** Boxes buried inside a stack read weaker than the pallet tag
+  on the outside — which is why pallets lose boxes, and why `SHORT_PALLET`
+  is a failure mode in the first place.
+- **Antenna order.** The two antennas of a portal are separated along the
+  direction of travel, so one peaks slightly before the other. `sim reverse`
+  flips that order. It is the only thing in the raw stream that tells
+  "came in" from "carried back out".
+
+The numbers behind all of this are constants at the top of
+`src/tasker_rfid/services/simulator/model.py`, each with a comment saying
+what it represents. They are guesses based on how UHF equipment behaves and
+should be re-measured against the real reader when it arrives.
+
+---
+
 ## Configuration
 
 Two files, deliberately kept separate:
@@ -226,7 +345,11 @@ migrations/versions/         database schema, one file per change
 scripts/check_schema.sql     the "did it work" query above
 seeds/                       SKU and customer spreadsheets (CSV)
 src/tasker_rfid/seed.py      loads seeds/ into the database
+tests/                       automated tests (uv run pytest)
 src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulator
+  simulator/model.py           what a read burst looks like (pure, testable)
+  simulator/publisher.py       MQTT publishing and message format
+  simulator/cli.py             the `sim` command
 web/                         dashboard
 ```
 
