@@ -17,6 +17,7 @@ tasker-seed = "tasker_rfid.seed:main"
 sim = "tasker_rfid.services.simulator.cli:main"
 tasker-ingest = "tasker_rfid.services.ingest.service:main"
 tasker-debouncer = "tasker_rfid.services.debouncer.service:main"
+tasker-state-engine = "tasker_rfid.services.state_engine.service:main"
 
 [dependency-groups]
 dev = [
@@ -29,3 +30,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tasker_rfid"]
+
+[tool.pytest.ini_options]
+# tests/integration/conftest.py is imported by name from the test module,
+# so its directory has to be on the path.
+testpaths = ["tests"]
