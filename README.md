@@ -5,9 +5,9 @@ RFID-based finished-goods stock control for Tasker S.A.
 **`SPEC.md` in this directory is the authoritative specification.** If the code
 and the spec disagree, the spec wins and the code is a bug.
 
-Current state: **build order step 3 of 10** — scaffold, containers, database
-schema, seed data, and the simulator. The ingest service is not built yet, so
-the simulator's messages are published but nothing is listening to them.
+Current state: **build order step 4 of 10** — scaffold, containers, database
+schema, seed data, the simulator, and the ingest service. Reads now flow from
+the simulator into `reads_raw`. Nothing debounces them yet.
 
 ---
 
@@ -69,8 +69,11 @@ Confirm both containers are healthy:
 docker compose ps
 ```
 
-*Expect:* `tasker-postgres` and `tasker-mosquitto`, both `running`. Postgres
-should say `(healthy)` after a few seconds.
+*Expect:* `tasker-postgres`, `tasker-mosquitto` and `tasker-ingest`, all
+`running`. Postgres should say `(healthy)` after a few seconds.
+
+The first `docker compose up -d` builds the ingest image and takes a couple of
+minutes. Later ones are quick.
 
 *If Postgres says port 5432 is already in use:* you have another Postgres on
 this machine. Change `POSTGRES_PORT` in `.env` to `5433`, update the port in
@@ -318,6 +321,100 @@ should be re-measured against the real reader when it arrives.
 
 ---
 
+## The ingest service
+
+Subscribes to MQTT, validates each message, writes it to `reads_raw`, and
+does nothing else (SPEC.md §4, layer 1). It runs as a container alongside
+Postgres and Mosquitto, started by `docker compose up -d`.
+
+```bash
+docker compose logs -f ingest      # watch it work
+docker compose restart ingest      # restart it
+```
+
+*Expect*, on startup:
+
+```
+ingest running; waiting for reads
+connected to MQTT, subscribed to tasker/reads/#
+```
+
+and every ten seconds while running:
+
+```
+inserted=9784 rejected=0 queued=23
+```
+
+`inserted` is the running total written to `reads_raw`. `rejected` counts
+messages that could not become a row — see below. `queued` is how far
+behind the database is; it should sit at or near zero and come back down
+after a burst. A `queued` figure that climbs and stays high means Postgres
+cannot keep up.
+
+To confirm reads are landing:
+
+```bash
+docker compose exec postgres psql -U tasker -d tasker -c "select count(*) from reads_raw;"
+```
+
+Run `uv run sim box --tid A7F3 --portal ENTRANCE`, then run that count
+again — it should have gone up by roughly two hundred.
+
+### Never block, never drop
+
+Those two requirements pull against each other, and the way they are
+reconciled is the main thing to understand about this service.
+
+**Never block.** The MQTT callback does almost nothing: it drops the raw
+bytes on an in-memory queue and returns. Decoding, validating and writing
+all happen on a separate writer thread. Nothing touches the database on the
+network thread, so a slow database cannot stall the MQTT client.
+
+**Never drop.** The writer acknowledges an MQTT message only *after*
+Postgres has committed it. Until then the message still belongs to the
+broker. If this service crashes, or the machine loses power, the broker
+redelivers everything that was never acknowledged.
+
+**When Postgres is down**, the writer stops acknowledging. Unacknowledged
+messages pile up at the broker, the broker stops sending, and the system
+applies backpressure instead of losing reads. When Postgres returns, the
+same batch is retried. The cost, stated plainly: during a database outage
+ingest slows down and eventually stops accepting reads, rather than
+accepting reads it cannot keep. For stock control that is the right way
+round.
+
+Two settings exist purely to support this and should not be lowered:
+`INGEST_CLIENT_ID` in `.env` (a fixed id plus a persistent session is what
+makes the broker hold reads for us) and `max_inflight_messages` in
+`docker/mosquitto/mosquitto.conf` (the broker must tolerate many unacked
+messages at once, or throughput collapses).
+
+### What counts as a bad message
+
+A message that cannot become a row is logged in full, counted in
+`rejected`, and then acknowledged so it does not block everything behind
+it. It is not a lost read — it was never a read. The full payload is in
+`docker compose logs ingest`, so nothing disappears silently:
+
+```
+REJECTED (read_at 'never' is not a valid ISO 8601 timestamp) | payload=b'{"tid":"X",...
+```
+
+Refused: malformed JSON, a missing `tid` / `reader_id` / `antenna_id` /
+`read_at`, a blank id, a non-numeric antenna, an unparseable timestamp, and
+values too large for their column.
+
+Accepted with a warning: a timestamp with no timezone (assumed UTC — a
+questionable time can be corrected by replaying `reads_raw`, a rejected
+read cannot be recovered at all). Unknown extra fields are ignored, so a
+future reader firmware that adds a field does not stop the line.
+
+Duplicate reads are inserted as duplicate rows on purpose. `reads_raw` is
+the append-only record of what the antennas actually heard; collapsing
+duplicates is the debouncer's job, not ingest's.
+
+---
+
 ## Configuration
 
 Two files, deliberately kept separate:
@@ -337,7 +434,8 @@ add it to `.env.example` too, so the next person knows it exists.
 ```
 SPEC.md                      the specification — read this first
 PROMPTS.md                   the build plan
-docker-compose.yml           Postgres 16 + Mosquitto
+docker-compose.yml           Postgres 16 + Mosquitto + ingest
+Dockerfile                   image for the background services
 docker/mosquitto/            broker config
 config/tasker.yaml           runtime tuning (SPEC.md §8)
 alembic.ini                  migration tool config
@@ -350,6 +448,8 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   simulator/model.py           what a read burst looks like (pure, testable)
   simulator/publisher.py       MQTT publishing and message format
   simulator/cli.py             the `sim` command
+  ingest/validation.py         what counts as a valid read (pure, testable)
+  ingest/service.py            MQTT to reads_raw
 web/                         dashboard
 ```
 
