@@ -1,0 +1,5 @@
+sku_id,name,family,units_per_box,tag_class,active
+CONE-STD-120,Standard sugar cone 120mm,cones,600,,true
+CUP-PAPER-150,Paper cup 150ml with lid,cups,1000,,true
+PWD-VAN-1KG,Vanilla soft-serve powder 1kg,powder,10,,true
+SAUCE-CHOC-1L,Chocolate topping sauce 1L,sauce,6,,true

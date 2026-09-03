@@ -11,6 +11,9 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.scripts]
+tasker-seed = "tasker_rfid.seed:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
