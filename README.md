@@ -346,8 +346,8 @@ and every ten seconds while running:
 inserted=9784 rejected=0 queued=23
 ```
 
-`inserted` is the running total written to `reads_raw`. `rejected` counts
-messages that could not become a row — see below. `queued` is how far
+`inserted` is the running total written to `reads_raw`. `gate_events` counts IR beam
+changes stored. `rejected` counts messages that could not become a row — see below. `queued` is how far
 behind the database is; it should sit at or near zero and come back down
 after a burst. A `queued` figure that climbs and stays high means Postgres
 cannot keep up.
@@ -487,6 +487,81 @@ A tag parked in the field never goes quiet, so it stays one open group,
 however long it sits there. Groups hold running totals rather than the
 reads themselves, so this costs nothing in memory.
 
+### Direction, and the IR gate
+
+`observations.direction` says which way something went. How it is decided
+depends on the portal, and the two are deliberately different (SPEC.md §4,
+layer 3):
+
+| Portal | How | `direction` |
+|---|---|---|
+| **EXIT** | IR beam gate | `OUT`, `IN`, or `UNKNOWN` |
+| **ENTRANCE** | state machine, later | always `NULL` |
+
+The entrance stays NULL on purpose. SPEC.md §4 says a container entering
+storage is unambiguous and needs no beams, so the state engine decides it.
+NULL here means "not this layer's job", which is why an exit read the gate
+could not explain is written as `UNKNOWN` rather than NULL — that
+distinguishes "the gate looked and could not say" from "nobody has looked".
+
+**The gate.** Two infrared beams a few centimetres apart across the exit
+doorway. `INNER` faces the warehouse, `OUTER` faces the street:
+
+```
+   warehouse  |  INNER   OUTER  |  street
+                  |       |
+   leaving  ------|------>|------>     INNER breaks first  -> OUT
+   coming in <----|<------|------      OUTER breaks first  -> IN
+```
+
+Break order is the whole signal, and the beams are centimetres apart, so
+the gap between them is a few hundredths of a second. The simulator models
+that gap, and its jitter, honestly.
+
+The gate publishes each beam change on `tasker/gates/<gate_id>`:
+
+```json
+{
+  "gate_id": "GATE-EXIT",
+  "beam": "INNER",
+  "state": "BROKEN",
+  "occurred_at": "2026-09-03T14:22:31.100000+00:00"
+}
+```
+
+Four fields, four columns of `gate_events` — the same rule as tag reads,
+so ingest stays a dumb insert. And as with antenna numbers, the message
+says *which gate*, never which portal: that mapping is warehouse layout,
+and lives in `config/tasker.yaml` under `exit: gate_id:`.
+
+**Matching a crossing to a tag.** The RF field reaches well beyond the
+beams, so a tag is read before and after it crosses them — the crossing
+window always sits inside the observation window, and overlap is the test.
+One pallet is one crossing however many tags ride on it, so all 47
+observations of a 50-box pallet take the same direction from the same four
+beam events. Where two loads pass in quick succession, the nearer crossing
+by midpoint wins.
+
+The 2-second quiet period doubles as the grace period here: an observation
+is only written 2 seconds after its last read, by which time the beam
+events it needs are long since stored.
+
+**Which commands emit a crossing:**
+
+```bash
+uv run sim box     --portal EXIT     # INNER then OUTER  -> OUT
+uv run sim reverse --portal EXIT     # OUTER then INNER  -> IN
+uv run sim pallet  --portal EXIT     # one crossing for the whole load
+uv run sim box     --portal ENTRANCE # no beams at all: the entrance has no gate
+uv run sim stray   --portal EXIT     # reads, but nothing crosses -> UNKNOWN
+uv run sim burst                     # a throughput test, not a movement
+```
+
+`sim reverse --portal ENTRANCE` produces no beam events either, for the
+same reason: there is no gate there to break.
+
+---
+
 ### What gets thrown away
 
 | Rejected | Because |
@@ -511,10 +586,9 @@ tag problem.
 
 ### Not done here
 
-`observations.direction` is left NULL. Direction is layer 3, and for the
-exit portal it needs IR beam data that no hardware or simulator produces
-yet. Nothing reads `observations` yet either — that is the state engine,
-step 6.
+Nothing reads `observations` yet — that is the state engine, step 6. The
+debouncer raises no anomalies either; a `NO_DIRECTION` anomaly for an exit
+read written as `UNKNOWN` belongs to the state engine.
 
 ---
 
@@ -555,6 +629,7 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   ingest/validation.py         what counts as a valid read (pure, testable)
   ingest/service.py            MQTT to reads_raw
   debouncer/grouping.py        how reads become one event (pure, testable)
+  debouncer/direction.py       beam breaks to IN / OUT (pure, testable)
   debouncer/service.py         reads_raw to observations
 web/                         dashboard
 ```
