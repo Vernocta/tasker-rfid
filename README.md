@@ -5,9 +5,10 @@ RFID-based finished-goods stock control for Tasker S.A.
 **`SPEC.md` in this directory is the authoritative specification.** If the code
 and the spec disagree, the spec wins and the code is a bug.
 
-Current state: **build order step 4 of 10** — scaffold, containers, database
-schema, seed data, the simulator, and the ingest service. Reads now flow from
-the simulator into `reads_raw`. Nothing debounces them yet.
+Current state: **build order step 5 of 10** — scaffold, containers, database
+schema, seed data, the simulator, ingest, and the debouncer. Reads flow from
+the simulator into `reads_raw` and are collapsed into `observations`. Nothing
+acts on those observations yet.
 
 ---
 
@@ -69,8 +70,8 @@ Confirm both containers are healthy:
 docker compose ps
 ```
 
-*Expect:* `tasker-postgres`, `tasker-mosquitto` and `tasker-ingest`, all
-`running`. Postgres should say `(healthy)` after a few seconds.
+*Expect:* `tasker-postgres`, `tasker-mosquitto`, `tasker-ingest` and
+`tasker-debouncer`, all `running`. Postgres should say `(healthy)` after a few seconds.
 
 The first `docker compose up -d` builds the ingest image and takes a couple of
 minutes. Later ones are quick.
@@ -415,6 +416,108 @@ duplicates is the debouncer's job, not ingest's.
 
 ---
 
+## The debouncer
+
+Collapses the many raw reads of one physical event into a single
+observation (SPEC.md §4, layer 2), then applies the RSSI floor and minimum
+read count from `config/tasker.yaml`. Runs as a container alongside the
+others.
+
+```bash
+docker compose logs -f debouncer
+```
+
+*Expect*, on startup:
+
+```
+debouncer running; resuming after read id 0. quiet_period=2000ms rssi_floor=-65dBm min_read_count=3
+```
+
+and every ten seconds:
+
+```
+reads=3120 observations=53 rejected=2 open_groups=0
+```
+
+`open_groups` is how many tags are mid-event right now. It should return to
+zero shortly after a portal goes quiet.
+
+### The collapse
+
+One box through a portal is a couple of hundred rows in `reads_raw` and
+exactly one row in `observations`:
+
+| Command | `reads_raw` | `observations` | Ratio |
+|---|---|---|---|
+| `sim box` | 188 | 1 | 188 : 1 |
+| `sim pallet --boxes 50` | 1,500 | 47 | 32 : 1 |
+| `sim stray --duration 120` | 836 | 1 | 836 : 1 |
+
+The pallet's 47 is the interesting number: one pallet tag plus 46 readable
+boxes, because 4 of the 50 were missed at the default 8% miss rate. The
+count of observations equals the count of distinct tags, which is what
+"one observation per physical event" means.
+
+To see it yourself, on an empty database:
+
+```bash
+docker compose exec postgres psql -U tasker -d tasker -c "select count(*) from reads_raw;"
+uv run sim pallet --boxes 50 --portal EXIT
+sleep 8
+docker compose exec postgres psql -U tasker -d tasker -c "
+  select (select count(*) from reads_raw) as reads_raw,
+         (select count(*) from observations) as observations;"
+```
+
+### How an event is bounded
+
+A tag's reads at a portal belong to the same event until it has been quiet
+there for `quiet_period_ms` (2 seconds). The next read after that silence
+starts a new observation, so a box carried past twice produces two rows,
+not one.
+
+The quiet period is measured **per (tid, portal)**, against that tag's own
+last read — never against a shared "latest read seen anywhere" clock. That
+matters: a shared clock lets one reader with a wrong clock decide that
+every other tag has gone quiet, which shatters each pass into fragments.
+A group is also closed when nothing has arrived for it at all within the
+quiet period, which is what ends the last tag of a burst.
+
+A tag parked in the field never goes quiet, so it stays one open group,
+however long it sits there. Groups hold running totals rather than the
+reads themselves, so this costs nothing in memory.
+
+### What gets thrown away
+
+| Rejected | Because |
+|---|---|
+| `peak_rssi` below `rssi_floor_dbm` (−65) | a tag two aisles away catching a reflection was never at the portal |
+| `read_count` below `min_read_count` (3) | a single spurious read is not a box going past |
+
+Rejections are logged with the reason and counted in `rejected`:
+
+```
+rejected FAINT-TAG at EXIT: peak_rssi -78 dBm below floor -65 dBm
+rejected BLIP-TAG at EXIT: read_count 2 below minimum 3
+```
+
+Rejected events are not written to `observations` at all. Nothing is lost —
+every read is still in `reads_raw`, and lowering a threshold in
+`config/tasker.yaml` and replaying would produce them.
+
+A read from an antenna that no portal claims is logged and skipped, since
+`observations.portal` cannot be guessed. That means a config error, not a
+tag problem.
+
+### Not done here
+
+`observations.direction` is left NULL. Direction is layer 3, and for the
+exit portal it needs IR beam data that no hardware or simulator produces
+yet. Nothing reads `observations` yet either — that is the state engine,
+step 6.
+
+---
+
 ## Configuration
 
 Two files, deliberately kept separate:
@@ -434,10 +537,11 @@ add it to `.env.example` too, so the next person knows it exists.
 ```
 SPEC.md                      the specification — read this first
 PROMPTS.md                   the build plan
-docker-compose.yml           Postgres 16 + Mosquitto + ingest
+docker-compose.yml           Postgres 16 + Mosquitto + ingest + debouncer
 Dockerfile                   image for the background services
 docker/mosquitto/            broker config
 config/tasker.yaml           runtime tuning (SPEC.md §8)
+src/tasker_rfid/config.py    the one place that reads tasker.yaml
 alembic.ini                  migration tool config
 migrations/versions/         database schema, one file per change
 scripts/check_schema.sql     the "did it work" query above
@@ -450,6 +554,8 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   simulator/cli.py             the `sim` command
   ingest/validation.py         what counts as a valid read (pure, testable)
   ingest/service.py            MQTT to reads_raw
+  debouncer/grouping.py        how reads become one event (pure, testable)
+  debouncer/service.py         reads_raw to observations
 web/                         dashboard
 ```
 
