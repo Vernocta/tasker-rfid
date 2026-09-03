@@ -32,6 +32,28 @@ services:
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
 
+  ingest:
+    build: .
+    container_name: tasker-ingest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    environment:
+      # Inside the compose network the other services are reachable by
+      # their service names, not localhost, so these override .env.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tasker}:${POSTGRES_PASSWORD:-tasker}@postgres:5432/${POSTGRES_DB:-tasker}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_TOPIC: ${MQTT_TOPIC:-tasker/reads}
+      # Fixed client id plus a persistent session: this is what lets the
+      # broker hold reads for us while ingest is restarting, and redeliver
+      # anything we never acknowledged.
+      INGEST_CLIENT_ID: ${INGEST_CLIENT_ID:-tasker-ingest}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
 volumes:
   postgres_data:
   mosquitto_data:
