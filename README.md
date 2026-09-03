@@ -5,10 +5,10 @@ RFID-based finished-goods stock control for Tasker S.A.
 **`SPEC.md` in this directory is the authoritative specification.** If the code
 and the spec disagree, the spec wins and the code is a bug.
 
-Current state: **build order step 5 of 10** — scaffold, containers, database
-schema, seed data, the simulator, ingest, and the debouncer. Reads flow from
-the simulator into `reads_raw` and are collapsed into `observations`. Nothing
-acts on those observations yet.
+Current state: **build order step 6 of 10** — scaffold, containers, database
+schema, seed data, the simulator, ingest, the debouncer and the state engine.
+Reads flow all the way from the simulator to stock movements and anomalies.
+There is no API or dashboard yet, so the database is the only way to look.
 
 ---
 
@@ -70,8 +70,8 @@ Confirm both containers are healthy:
 docker compose ps
 ```
 
-*Expect:* `tasker-postgres`, `tasker-mosquitto`, `tasker-ingest` and
-`tasker-debouncer`, all `running`. Postgres should say `(healthy)` after a few seconds.
+*Expect:* `tasker-postgres`, `tasker-mosquitto`, `tasker-ingest`,
+`tasker-debouncer` and `tasker-state-engine`, all `running`. Postgres should say `(healthy)` after a few seconds.
 
 The first `docker compose up -d` builds the ingest image and takes a couple of
 minutes. Later ones are quick.
@@ -152,7 +152,8 @@ uv run alembic upgrade head       # apply any new migrations
 uv run alembic current            # which migration is applied
 uv run alembic downgrade base     # drop all tables (destroys data)
 
-uv run pytest                     # run the automated tests
+uv run pytest tests/unit          # fast tests
+uv run pytest tests/integration   # failure-mode tests (stack must be up)
 ```
 
 Open a database prompt:
@@ -592,6 +593,156 @@ read written as `UNKNOWN` belongs to the state engine.
 
 ---
 
+## The state engine
+
+The only code in the system that writes `containers.status`. Ingest, the
+debouncer and the API all stop short of it; every state change goes
+through this one service (SPEC.md §4, layer 4). One place to reason about,
+one place to audit.
+
+```bash
+docker compose logs -f state_engine
+```
+
+*Expect*, every ten seconds:
+
+```
+observations=412 movements=53 anomalies=4 no_ops=359
+```
+
+`no_ops` is the healthy number. It counts reads of containers that were
+already in the state they would have moved to — a box sitting near an
+antenna, a pallet read twice. In a working warehouse it should dwarf
+`movements`.
+
+### The transition table
+
+```
+REGISTERED  ->  IN_STOCK  ->  DISPATCHED
+```
+
+| Where it was seen | Status now | What happens |
+|---|---|---|
+| Entrance, or exit inbound | `REGISTERED` | → `IN_STOCK` |
+| Entrance, or exit inbound | `IN_STOCK` | nothing at all |
+| Entrance, or exit inbound | `DISPATCHED`, reusable | → `REGISTERED` (empty pallet back) |
+| Entrance, or exit inbound | `DISPATCHED`, not reusable | `ILLEGAL_TRANSITION` |
+| Exit, outbound | `IN_STOCK` | → `DISPATCHED`, needs an open session |
+| Exit, outbound | `REGISTERED` | `ILLEGAL_TRANSITION` |
+| Exit, outbound | `DISPATCHED` | `ILLEGAL_TRANSITION` |
+| Exit, `UNKNOWN` direction | anything | `NO_DIRECTION`, nothing moves |
+| Any, tag not registered | — | `UNKNOWN_TID`, nothing moves |
+
+Row 2 is the one that matters most. **A container already in the state it
+would move to is left alone.** That is why a box parked by an antenna for
+ten minutes produces thousands of reads and no stock movement at all —
+not because anything detects and discards duplicates, but because there is
+nothing for a repeat read to do (SPEC.md §2.3).
+
+Two rows are judgement calls the spec does not state outright, both
+resolved the same way — surface it, do not guess:
+
+- **A dispatched box coming back** is a customer return, which this system
+  does not model. It raises an anomaly rather than quietly changing stock.
+- **Goods leaving that were never booked into stock** skips a state, so a
+  person looks rather than the system inventing the missing step.
+
+### Rules it enforces
+
+- **Nothing leaves unattributed.** A dispatch needs an open
+  `dispatch_session`. Without one the container stays put and a
+  `NO_SESSION` anomaly is raised (SPEC.md §2.5).
+- **Moving a pallet moves everything on it**, however deep the nesting, in
+  one transaction — including boxes whose tags were never read.
+- **A short load is recorded, not blocked.** A pallet read with fewer boxes
+  than are attached still leaves, and raises `SHORT_PALLET` alongside.
+- Each observation is handled in its own transaction: the status changes,
+  the movement rows, any anomaly, and marking the observation processed
+  all commit together or not at all.
+
+A pallet's observation is held back a few seconds before its load is
+judged. The boxes on a pallet cross the portal together but their
+observations are not written together, and counting too early reports
+boxes missing that are simply still in flight — a false `SHORT_PALLET` on
+a pallet that was complete.
+
+---
+
+## Running the tests
+
+Two sets, two commands.
+
+**Fast tests — no Docker needed.** Pure logic: the transition table, the
+debouncer's grouping rules, IR beam direction, ingest validation, the
+simulator's read model.
+
+```bash
+uv run pytest tests/unit
+```
+
+*Expect:* `66 passed in 0.10s`
+
+**Failure-mode tests — the whole system, end to end.** These publish real
+MQTT messages with the simulator and wait for ingest, the debouncer and
+the state engine to do their work. Nothing is stubbed. Start the stack
+first:
+
+```bash
+docker compose up -d
+uv run alembic upgrade head
+uv run pytest tests/integration -v
+```
+
+*Expect:* twelve `PASSED` lines and `12 passed`. It takes about a minute
+and a half, because the tests wait for the real 2-second quiet periods
+rather than pretending.
+
+```
+tests/integration/test_failure_modes.py::test_a_box_parked_by_an_antenna_for_ten_minutes_changes_state_once PASSED [  8%]
+tests/integration/test_failure_modes.py::test_the_same_container_cannot_be_dispatched_twice PASSED [ 16%]
+tests/integration/test_failure_modes.py::test_an_exit_read_with_no_open_session_does_not_dispatch PASSED [ 25%]
+tests/integration/test_failure_modes.py::test_the_same_read_dispatches_once_a_session_is_open PASSED [ 33%]
+tests/integration/test_failure_modes.py::test_moving_a_pallet_moves_every_box_on_it PASSED [ 41%]
+tests/integration/test_failure_modes.py::test_a_pallet_moves_its_boxes_even_when_their_tags_are_never_read PASSED [ 50%]
+tests/integration/test_failure_modes.py::test_a_pallet_with_fewer_boxes_than_declared_raises_short_pallet PASSED [ 58%]
+tests/integration/test_failure_modes.py::test_a_complete_pallet_raises_nothing PASSED [ 66%]
+tests/integration/test_failure_modes.py::test_an_exit_read_the_gate_cannot_explain_does_not_dispatch PASSED [ 75%]
+tests/integration/test_failure_modes.py::test_a_dispatched_box_reappearing_is_flagged_not_absorbed PASSED [ 83%]
+tests/integration/test_failure_modes.py::test_an_empty_pallet_coming_back_is_ready_to_use_again PASSED [ 91%]
+tests/integration/test_failure_modes.py::test_a_tag_with_no_container_record_is_flagged_and_not_counted PASSED [100%]
+
+======================== 12 passed in 99.17s (0:01:39) =========================
+```
+
+If the stack is not running you get `12 skipped`, with a line telling you
+what to start. That is not a pass — nothing was checked.
+
+**If a test fails**, it prints the assertion and the actual database values
+alongside. Send me the whole output.
+
+The tests never delete anything. `reads_raw` is append-only by design
+(SPEC.md §3), so each test invents its own tag ids and asserts only on its
+own rows. Running them repeatedly is safe, and they leave real history
+behind in the same tables the warehouse will use.
+
+### What each failure mode test proves
+
+| SPEC.md §7 failure | Test |
+|---|---|
+| Stationary stock read continuously | thousands of reads, **one** state change, then nothing |
+| Container counted twice | the second exit read is an anomaly, not a second dispatch |
+| Exit read, no session open | `NO_SESSION`; the container stays `IN_STOCK` |
+| Carried back out the entrance | `ILLEGAL_TRANSITION`; stock unchanged |
+| Pallet read but boxes missed | `SHORT_PALLET` naming how many are missing |
+| Container missed at portal | a box whose tag never answers still leaves on its pallet |
+| Direction unresolved at the exit | `NO_DIRECTION`; nothing is dispatched on a guess |
+| Tag with no container record | `UNKNOWN_TID`; not counted |
+| Network drop / Postgres restart | ingest holds and retries — see *Never block, never drop* |
+| Reader offline | `/health`, step 7 |
+| Tag destroyed | cycle count reconciliation, step 7 |
+
+---
+
 ## Configuration
 
 Two files, deliberately kept separate:
@@ -611,7 +762,7 @@ add it to `.env.example` too, so the next person knows it exists.
 ```
 SPEC.md                      the specification — read this first
 PROMPTS.md                   the build plan
-docker-compose.yml           Postgres 16 + Mosquitto + ingest + debouncer
+docker-compose.yml           Postgres 16 + Mosquitto + the three services
 Dockerfile                   image for the background services
 docker/mosquitto/            broker config
 config/tasker.yaml           runtime tuning (SPEC.md §8)
@@ -621,7 +772,8 @@ migrations/versions/         database schema, one file per change
 scripts/check_schema.sql     the "did it work" query above
 seeds/                       SKU and customer spreadsheets (CSV)
 src/tasker_rfid/seed.py      loads seeds/ into the database
-tests/                       automated tests (uv run pytest)
+tests/unit/                  fast tests, no Docker needed
+tests/integration/           failure-mode tests against the running stack
 src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulator
   simulator/model.py           what a read burst looks like (pure, testable)
   simulator/publisher.py       MQTT publishing and message format
@@ -631,6 +783,8 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   debouncer/grouping.py        how reads become one event (pure, testable)
   debouncer/direction.py       beam breaks to IN / OUT (pure, testable)
   debouncer/service.py         reads_raw to observations
+  state_engine/transitions.py  the transition table (pure, testable)
+  state_engine/service.py      the ONLY writer of containers.status
 web/                         dashboard
 ```
 
