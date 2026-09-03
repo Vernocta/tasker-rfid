@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 tasker-seed = "tasker_rfid.seed:main"
 sim = "tasker_rfid.services.simulator.cli:main"
+tasker-ingest = "tasker_rfid.services.ingest.service:main"
 
 [dependency-groups]
 dev = [
