@@ -5,11 +5,16 @@ and writes one observation per group once that tag has been quiet at that
 portal for quiet_period_ms. Applies the RSSI floor and minimum read count
 from config/tasker.yaml.
 
-WHAT THIS SERVICE DOES NOT DO. It does not decide direction. That is
-layer 3, and for the exit portal it needs IR beam data that no hardware
-or simulator produces yet, so observations are written with direction
-NULL for layer 3 to fill in later. It does not touch containers.status —
-SPEC.md section 4 is explicit that only the state engine may do that.
+DIRECTION. At a portal with an IR gate (the exit), the beam events in
+gate_events are turned into crossings and matched to each observation by
+time, giving IN or OUT — or UNKNOWN when the gate could not say. At a
+portal without one (the entrance), direction is left NULL: SPEC.md
+section 4 says the entrance resolves direction from the state machine
+alone.
+
+WHAT THIS SERVICE DOES NOT DO. It does not touch containers.status —
+SPEC.md section 4 is explicit that only the state engine may do that. It
+does not raise anomalies; NO_DIRECTION belongs to the state engine.
 
 HOW IT REMEMBERS ITS PLACE. reads_raw is append-only with no processed
 flag, so the position is kept in debouncer_cursor (see migration 0002,
@@ -34,7 +39,15 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 from dotenv import load_dotenv
 
-from ...config import load_config, load_filters, portal_by_antenna
+from ...config import (
+    DIRECTION_UNKNOWN,
+    gate_id_for_portal,
+    ir_gate_timeout_ms,
+    load_config,
+    load_filters,
+    portal_by_antenna,
+)
+from .direction import crossings_from_events, direction_for_window
 from .grouping import (
     Observation,
     OpenGroup,
@@ -54,6 +67,14 @@ POLL_INTERVAL_S = 0.25
 """How long to wait before asking again when there was nothing new."""
 
 STATS_INTERVAL_S = 10.0
+
+GATE_LOOKUP_MARGIN_S = 5.0
+"""How far either side of an observation to look for beam events.
+
+The beams sit at the centre of the portal and the RF field reaches well
+beyond them, so a crossing always falls inside its observation. The margin
+only has to cover clock differences between the reader and the gate.
+"""
 
 FUTURE_READ_WARN_S = 300
 """Warn when a read is stamped this far ahead of now: a reader clock is wrong.
@@ -76,7 +97,14 @@ FETCH_SQL = """
 INSERT_OBSERVATION_SQL = """
     INSERT INTO observations
         (tid, portal, direction, first_read, last_read, read_count, peak_rssi, processed)
-    VALUES (%s, %s, NULL, %s, %s, %s, %s, FALSE)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE)
+"""
+
+FETCH_GATE_EVENTS_SQL = """
+    SELECT beam, state, occurred_at
+    FROM gate_events
+    WHERE gate_id = %s AND occurred_at BETWEEN %s AND %s
+    ORDER BY occurred_at, id
 """
 
 READ_CURSOR_SQL = "SELECT last_read_id FROM debouncer_cursor WHERE name = 'debouncer'"
@@ -100,6 +128,18 @@ class Debouncer:
         config = load_config()
         self.filters = load_filters(config)
         self.portal_of = portal_by_antenna(config)
+        # Only gated portals resolve direction here. The entrance has no
+        # gate: SPEC.md section 4 says it uses the state machine alone, so
+        # its observations keep direction NULL.
+        self.gate_of_portal = {
+            portal: gate_id_for_portal(portal, config)
+            for portal in {"ENTRANCE", "EXIT"}
+            if gate_id_for_portal(portal, config)
+        }
+        self.gate_timeout_s = {
+            portal: ir_gate_timeout_ms(portal, config) / 1000.0
+            for portal in self.gate_of_portal
+        }
 
         self.open_groups: dict[tuple[str, str], OpenGroup] = {}
         self.closed_this_round: list[Observation] = []
@@ -112,6 +152,8 @@ class Debouncer:
         self.observations_rejected = 0
         self.unmapped_antenna_reads = 0
         self.future_dated_reads = 0
+        self.directions_resolved = 0
+        self.directions_unknown = 0
 
     # -- Database ---------------------------------------------------------
 
@@ -157,6 +199,61 @@ class Debouncer:
 
         return self.with_retry("fetching reads", action)
 
+    def fetch_gate_events(
+        self, gate_id: str, window_start: datetime, window_end: datetime
+    ) -> list[tuple[str, str, datetime]]:
+        def action(conn):
+            with conn.cursor() as cur:
+                cur.execute(FETCH_GATE_EVENTS_SQL, (gate_id, window_start, window_end))
+                rows = cur.fetchall()
+            conn.rollback()
+            return rows
+
+        return self.with_retry("fetching gate events", action)
+
+    def resolve_directions(
+        self, observations: list[Observation]
+    ) -> dict[int, str | None]:
+        """Work out a direction for each observation at a gated portal.
+
+        One query per gate for the whole batch, not one per observation: a
+        50-box pallet is 47 observations sharing a single crossing.
+
+        Observations at an ungated portal are left alone and keep NULL.
+        """
+        directions: dict[int, str | None] = {}
+        by_portal: dict[str, list[tuple[int, Observation]]] = {}
+        for index, observation in enumerate(observations):
+            if observation.portal in self.gate_of_portal:
+                by_portal.setdefault(observation.portal, []).append((index, observation))
+
+        margin = timedelta(seconds=GATE_LOOKUP_MARGIN_S)
+        for portal, entries in by_portal.items():
+            gate_id = self.gate_of_portal[portal]
+            window_start = min(o.first_read for _, o in entries) - margin
+            window_end = max(o.last_read for _, o in entries) + margin
+
+            events = self.fetch_gate_events(gate_id, window_start, window_end)
+            crossings = crossings_from_events(events, self.gate_timeout_s[portal])
+
+            for index, observation in entries:
+                direction = direction_for_window(
+                    observation.first_read, observation.last_read, crossings
+                )
+                if direction is None:
+                    # Read at a gated portal with no crossing to match, or a
+                    # crossing where only one beam broke. Recorded as UNKNOWN
+                    # rather than left NULL, so the state engine can tell
+                    # "the gate could not say" from "nobody has looked yet".
+                    # SPEC.md section 3 makes this a NO_DIRECTION anomaly,
+                    # which is the state engine's to raise.
+                    direction = DIRECTION_UNKNOWN
+                    self.directions_unknown += 1
+                else:
+                    self.directions_resolved += 1
+                directions[index] = direction
+        return directions
+
     def commit(self, observations: list[Observation], cursor_id: int) -> None:
         """Write observations and advance the cursor in one transaction.
 
@@ -164,6 +261,8 @@ class Debouncer:
         observations exist and the cursor has moved past their reads, or
         neither happened and the reads are simply read again.
         """
+
+        directions = self.resolve_directions(observations) if observations else {}
 
         def action(conn):
             with conn.cursor() as cur:
@@ -174,12 +273,13 @@ class Debouncer:
                             (
                                 o.tid,
                                 o.portal,
+                                directions.get(index),
                                 o.first_read,
                                 o.last_read,
                                 o.read_count,
                                 o.peak_rssi,
                             )
-                            for o in observations
+                            for index, o in enumerate(observations)
                         ],
                     )
                 cur.execute(WRITE_CURSOR_SQL, (cursor_id,))
@@ -290,11 +390,13 @@ class Debouncer:
         self.cursor_id = self.load_cursor()
         log.info(
             "debouncer running; resuming after read id %d. "
-            "quiet_period=%dms rssi_floor=%ddBm min_read_count=%d",
+            "quiet_period=%dms rssi_floor=%ddBm min_read_count=%d. "
+            "IR gates: %s",
             self.cursor_id,
             self.filters.quiet_period_ms,
             self.filters.rssi_floor_dbm,
             self.filters.min_read_count,
+            self.gate_of_portal or "none configured",
         )
 
         last_stats = time.monotonic()
@@ -316,10 +418,13 @@ class Debouncer:
 
             if time.monotonic() - last_stats >= STATS_INTERVAL_S:
                 log.info(
-                    "reads=%d observations=%d rejected=%d open_groups=%d",
+                    "reads=%d observations=%d rejected=%d "
+                    "direction_resolved=%d direction_unknown=%d open_groups=%d",
                     self.reads_consumed,
                     self.observations_written,
                     self.observations_rejected,
+                    self.directions_resolved,
+                    self.directions_unknown,
                     len(self.open_groups),
                 )
                 last_stats = time.monotonic()
