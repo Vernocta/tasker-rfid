@@ -23,6 +23,10 @@ SMALLINT_MIN = -32768
 SMALLINT_MAX = 32767
 
 REQUIRED_FIELDS = ("tid", "reader_id", "antenna_id", "read_at")
+GATE_REQUIRED_FIELDS = ("gate_id", "beam", "state", "occurred_at")
+
+BEAMS = ("INNER", "OUTER")
+BEAM_STATES = ("BROKEN", "CLEAR")
 
 
 class InvalidRead(Exception):
@@ -129,3 +133,48 @@ def parse_read(payload: dict[str, Any]) -> tuple[RawRead, list[str]]:
         read_at=read_at,
     )
     return read, [warning] if warning else []
+
+
+@dataclass(frozen=True)
+class GateEvent:
+    """One IR beam changing state. Mirrors a row of gate_events."""
+
+    gate_id: str
+    beam: str
+    state: str
+    occurred_at: datetime
+
+    def as_row(self) -> tuple:
+        return (self.gate_id, self.beam, self.state, self.occurred_at)
+
+
+def _one_of(payload: dict[str, Any], field: str, allowed: tuple[str, ...]) -> str:
+    value = _text(payload, field).upper()
+    if value not in allowed:
+        raise InvalidRead(f"{field} must be one of {', '.join(allowed)}, got '{value}'")
+    return value
+
+
+def parse_gate_event(payload: dict[str, Any]) -> tuple[GateEvent, list[str]]:
+    """Validate a beam-break message.
+
+    Same bias as reads: reject only what cannot become a row. A beam name
+    or state outside the known set is refused, because guessing which beam
+    broke would invent a direction, and a wrong direction is worse than no
+    direction at all.
+    """
+    if not isinstance(payload, dict):
+        raise InvalidRead(f"payload must be a JSON object, got {type(payload).__name__}")
+
+    missing = [f for f in GATE_REQUIRED_FIELDS if f not in payload]
+    if missing:
+        raise InvalidRead(f"missing required field(s): {', '.join(missing)}")
+
+    occurred_at, warning = _timestamp(payload, "occurred_at")
+    event = GateEvent(
+        gate_id=_text(payload, "gate_id"),
+        beam=_one_of(payload, "beam", BEAMS),
+        state=_one_of(payload, "state", BEAM_STATES),
+        occurred_at=occurred_at,
+    )
+    return event, [warning] if warning else []

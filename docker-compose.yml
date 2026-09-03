@@ -48,6 +48,7 @@ services:
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
       MQTT_TOPIC: ${MQTT_TOPIC:-tasker/reads}
+      MQTT_GATE_TOPIC: ${MQTT_GATE_TOPIC:-tasker/gates}
       # Fixed client id plus a persistent session: this is what lets the
       # broker hold reads for us while ingest is restarting, and redeliver
       # anything we never acknowledged.

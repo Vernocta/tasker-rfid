@@ -43,7 +43,7 @@ import paho.mqtt.client as mqtt
 import psycopg
 from dotenv import load_dotenv
 
-from .validation import InvalidRead, RawRead, parse_read
+from .validation import GateEvent, InvalidRead, RawRead, parse_gate_event, parse_read
 
 log = logging.getLogger("ingest")
 
@@ -69,9 +69,14 @@ SHUTDOWN_DB_GRACE_S = 20.0
 
 STATS_INTERVAL_S = 10.0
 
-INSERT_SQL = """
+INSERT_READ_SQL = """
     INSERT INTO reads_raw (tid, epc, reader_id, antenna_id, rssi, read_at)
     VALUES (%s, %s, %s, %s, %s, %s)
+"""
+
+INSERT_GATE_SQL = """
+    INSERT INTO gate_events (gate_id, beam, state, occurred_at)
+    VALUES (%s, %s, %s, %s)
 """
 
 
@@ -96,6 +101,7 @@ class Ingest:
         mqtt_host: str,
         mqtt_port: int,
         topic_base: str,
+        gate_topic_base: str,
         client_id: str,
         username: str = "",
         password: str = "",
@@ -103,7 +109,9 @@ class Ingest:
         self.dsn = psycopg_dsn(database_url)
         self.mqtt_host = mqtt_host
         self.mqtt_port = mqtt_port
-        self.topic = f"{topic_base}/#"
+        self.read_topic = f"{topic_base}/#"
+        self.gate_topic = f"{gate_topic_base}/#"
+        self.read_topic_prefix = f"{topic_base}/"
         self.username = username
         self.password = password
 
@@ -112,6 +120,7 @@ class Ingest:
         self.writer_failed = threading.Event()
 
         self.inserted = 0
+        self.gate_events_inserted = 0
         self.rejected = 0
         self.conn: psycopg.Connection | None = None
 
@@ -140,8 +149,12 @@ class Ingest:
             return
         # Re-subscribe on every connect, so a reconnect cannot leave us
         # silently subscribed to nothing.
-        client.subscribe(self.topic, qos=1)
-        log.info("connected to MQTT, subscribed to %s", self.topic)
+        client.subscribe([(self.read_topic, 1), (self.gate_topic, 1)])
+        log.info(
+            "connected to MQTT, subscribed to %s and %s",
+            self.read_topic,
+            self.gate_topic,
+        )
 
     def on_disconnect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code != 0:
@@ -154,13 +167,13 @@ class Ingest:
         tens of thousands of reads behind. Blocking then is the intended
         backpressure: it slows the broker down instead of discarding reads.
         """
-        self.pending.put((message.payload, message.mid, message.qos))
+        self.pending.put((message.topic, message.payload, message.mid, message.qos))
 
     # -- Writer side. Everything slow happens here. ----------------------
 
-    def collect_batch(self) -> list[tuple[bytes, int, int]]:
+    def collect_batch(self) -> list[tuple[str, bytes, int, int]]:
         """Gather up to BATCH_MAX_ROWS messages, waiting at most BATCH_MAX_WAIT_S."""
-        batch: list[tuple[bytes, int, int]] = []
+        batch: list[tuple[str, bytes, int, int]] = []
         deadline = time.monotonic() + BATCH_MAX_WAIT_S
         while len(batch) < BATCH_MAX_ROWS:
             remaining = deadline - time.monotonic()
@@ -173,62 +186,91 @@ class Ingest:
         return batch
 
     def validate_batch(
-        self, batch: list[tuple[bytes, int, int]]
-    ) -> tuple[list[RawRead], list[tuple[int, int]]]:
-        """Split a batch into rows to insert and messages to acknowledge.
+        self, batch: list[tuple[str, bytes, int, int]]
+    ) -> tuple[list[RawRead], list[GateEvent], list[tuple[int, int]]]:
+        """Split a batch into tag reads, gate events, and messages to acknowledge.
+
+        The topic decides which it is: a message on the reads topic must be
+        a read, one on the gates topic must be a beam event. Nothing is
+        guessed from the payload's shape.
 
         A message that cannot become a row is logged in full and then
         acknowledged. It is not a lost read — it was never a read. Leaving
         it unacknowledged would have the broker redeliver the same broken
         message forever and wedge the pipeline behind it.
         """
-        rows: list[RawRead] = []
+        reads: list[RawRead] = []
+        gate_events: list[GateEvent] = []
         acks: list[tuple[int, int]] = []
-        for payload, mid, qos in batch:
+        for topic, payload, mid, qos in batch:
             acks.append((mid, qos))
+            is_read = topic.startswith(self.read_topic_prefix)
+            kind = "read" if is_read else "gate event"
             try:
                 decoded = json.loads(payload)
-                read, warnings = parse_read(decoded)
+                if is_read:
+                    read, warnings = parse_read(decoded)
+                    reads.append(read)
+                    subject = read.tid
+                else:
+                    event, warnings = parse_gate_event(decoded)
+                    gate_events.append(event)
+                    subject = event.gate_id
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 self.rejected += 1
-                log.error("REJECTED (not JSON): %s | payload=%r", exc, payload[:500])
+                log.error(
+                    "REJECTED %s (not JSON): %s | topic=%s payload=%r",
+                    kind, exc, topic, payload[:500],
+                )
                 continue
             except InvalidRead as exc:
                 self.rejected += 1
-                log.error("REJECTED (%s) | payload=%r", exc, payload[:500])
+                log.error(
+                    "REJECTED %s (%s) | topic=%s payload=%r",
+                    kind, exc, topic, payload[:500],
+                )
                 continue
             for warning in warnings:
-                log.warning("%s | tid=%s", warning, read.tid)
-            rows.append(read)
-        return rows, acks
+                log.warning("%s | %s", warning, subject)
+        return reads, gate_events, acks
 
     def connect_db(self) -> psycopg.Connection:
         if self.conn is None or self.conn.closed:
             self.conn = psycopg.connect(self.dsn, autocommit=False)
         return self.conn
 
-    def write_batch(self, rows: list[RawRead]) -> bool:
+    def write_batch(self, rows: list[RawRead], gate_events: list[GateEvent]) -> bool:
         """Insert and commit a batch, retrying until it succeeds.
 
-        Returns False only if we gave up during shutdown, in which case the
-        rows were never acknowledged and the broker still holds them.
+        Reads and gate events go in the same transaction, so a beam event
+        is never visible without the reads that accompanied it.
+
+        Returns False only if we gave up during shutdown, in which case
+        nothing was acknowledged and the broker still holds the messages.
         """
         delay = DB_RETRY_INITIAL_S
         gave_up_at = None
+        total = len(rows) + len(gate_events)
         while True:
             try:
                 conn = self.connect_db()
                 with conn.cursor() as cur:
-                    cur.executemany(INSERT_SQL, [row.as_row() for row in rows])
+                    if rows:
+                        cur.executemany(INSERT_READ_SQL, [row.as_row() for row in rows])
+                    if gate_events:
+                        cur.executemany(
+                            INSERT_GATE_SQL, [e.as_row() for e in gate_events]
+                        )
                 conn.commit()
                 self.inserted += len(rows)
+                self.gate_events_inserted += len(gate_events)
                 return True
             except psycopg.Error as exc:
                 log.error(
-                    "database write failed (%s); %d reads held, retrying in %.0fs. "
-                    "Nothing is acknowledged, so no read is lost.",
+                    "database write failed (%s); %d message(s) held, retrying in %.0fs. "
+                    "Nothing is acknowledged, so nothing is lost.",
                     exc,
-                    len(rows),
+                    total,
                     delay,
                 )
                 try:
@@ -242,10 +284,10 @@ class Ingest:
                     gave_up_at = gave_up_at or time.monotonic() + SHUTDOWN_DB_GRACE_S
                     if time.monotonic() >= gave_up_at:
                         log.error(
-                            "shutting down with %d reads uncommitted. They were never "
-                            "acknowledged and remain queued at the broker; they will be "
-                            "redelivered when this service restarts.",
-                            len(rows),
+                            "shutting down with %d message(s) uncommitted. They were "
+                            "never acknowledged and remain queued at the broker; they "
+                            "will be redelivered when this service restarts.",
+                            total,
                         )
                         return False
                 time.sleep(delay)
@@ -258,8 +300,8 @@ class Ingest:
             while not (self.stop_event.is_set() and self.pending.empty()):
                 batch = self.collect_batch()
                 if batch:
-                    rows, acks = self.validate_batch(batch)
-                    if rows and not self.write_batch(rows):
+                    rows, gate_events, acks = self.validate_batch(batch)
+                    if (rows or gate_events) and not self.write_batch(rows, gate_events):
                         return  # gave up during shutdown; deliberately no ack
                     # Only now is it safe to tell the broker we have these.
                     for mid, qos in acks:
@@ -267,8 +309,9 @@ class Ingest:
 
                 if time.monotonic() - last_stats >= STATS_INTERVAL_S:
                     log.info(
-                        "inserted=%d rejected=%d queued=%d",
+                        "inserted=%d gate_events=%d rejected=%d queued=%d",
                         self.inserted,
+                        self.gate_events_inserted,
                         self.rejected,
                         self.pending.qsize(),
                     )
@@ -307,7 +350,12 @@ class Ingest:
         self.client.disconnect()
         if self.conn is not None and not self.conn.closed:
             self.conn.close()
-        log.info("stopped. inserted=%d rejected=%d", self.inserted, self.rejected)
+        log.info(
+            "stopped. inserted=%d gate_events=%d rejected=%d",
+            self.inserted,
+            self.gate_events_inserted,
+            self.rejected,
+        )
         return 1 if self.writer_failed.is_set() else 0
 
     def request_stop(self, *_args) -> None:
@@ -330,6 +378,7 @@ def main() -> None:
         mqtt_host=os.getenv("MQTT_HOST", "localhost"),
         mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
         topic_base=os.getenv("MQTT_TOPIC", "tasker/reads"),
+        gate_topic_base=os.getenv("MQTT_GATE_TOPIC", "tasker/gates"),
         client_id=os.getenv("INGEST_CLIENT_ID", "tasker-ingest"),
         username=os.getenv("MQTT_USERNAME", ""),
         password=os.getenv("MQTT_PASSWORD", ""),
