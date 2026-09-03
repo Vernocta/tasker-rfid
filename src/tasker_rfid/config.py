@@ -21,6 +21,16 @@ DEFAULT_QUIET_PERIOD_MS = 2000
 DEFAULT_RSSI_FLOOR_DBM = -65
 DEFAULT_MIN_READ_COUNT = 3
 DEFAULT_ANTENNAS = {"ENTRANCE": [1, 2], "EXIT": [3, 4]}
+DEFAULT_GATE_IDS = {"ENTRANCE": None, "EXIT": "GATE-EXIT"}
+DEFAULT_IR_GATE_TIMEOUT_MS = 3000
+
+BEAM_INNER = "INNER"
+BEAM_OUTER = "OUTER"
+BEAMS = (BEAM_INNER, BEAM_OUTER)
+
+DIRECTION_IN = "IN"
+DIRECTION_OUT = "OUT"
+DIRECTION_UNKNOWN = "UNKNOWN"
 
 PORTALS = ("ENTRANCE", "EXIT")
 
@@ -91,3 +101,39 @@ def portal_by_antenna(config: dict[str, Any] | None = None) -> dict[int, str]:
         for antenna in antennas_for_portal(portal, loaded):
             mapping[antenna] = portal
     return mapping
+
+
+def gate_id_for_portal(portal: str, config: dict[str, Any] | None = None) -> str | None:
+    """The IR gate installed at this portal, or None if it has none.
+
+    Only the exit is gated. SPEC.md section 4: the entrance resolves
+    direction from the state machine alone, so it needs no beams.
+    """
+    portal = portal.upper()
+    section = (config if config is not None else load_config()).get("portals") or {}
+    configured = (section.get(portal.lower()) or {}).get("gate_id")
+    if configured:
+        return str(configured)
+    return DEFAULT_GATE_IDS.get(portal)
+
+
+def portal_by_gate(config: dict[str, Any] | None = None) -> dict[str, str]:
+    """The reverse lookup: gate id to portal name.
+
+    A gate knows it is "GATE-EXIT"; which portal that is belongs to the
+    warehouse layout, the same way antenna numbers do.
+    """
+    loaded = config if config is not None else load_config()
+    mapping: dict[str, str] = {}
+    for portal in PORTALS:
+        gate = gate_id_for_portal(portal, loaded)
+        if gate:
+            mapping[gate] = portal
+    return mapping
+
+
+def ir_gate_timeout_ms(portal: str, config: dict[str, Any] | None = None) -> int:
+    """How long the second beam has to break before the crossing is abandoned."""
+    section = (config if config is not None else load_config()).get("portals") or {}
+    value = (section.get(portal.lower()) or {}).get("ir_gate_timeout_ms")
+    return int(value) if value else DEFAULT_IR_GATE_TIMEOUT_MS

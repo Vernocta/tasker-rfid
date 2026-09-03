@@ -21,6 +21,11 @@ portals:
     direction_mode: ir_gated
     ir_gate_timeout_ms: 3000
     require_session: true
+    # The IR beam gate at this portal. Two beams a few centimetres apart:
+    # INNER faces the warehouse, OUTER faces the street. Breaking INNER
+    # then OUTER means something is leaving. The entrance has no gate --
+    # SPEC.md section 4 says the entrance uses the state machine alone.
+    gate_id: GATE-EXIT
 
 health:
   no_read_alert_hours: 4
