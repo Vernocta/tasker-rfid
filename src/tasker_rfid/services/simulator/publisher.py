@@ -32,12 +32,23 @@ import json
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
 
 import paho.mqtt.client as mqtt
 
-from .model import Read
+from .model import GateEvent, Read
 
 QOS_AT_LEAST_ONCE = 1
+
+
+@dataclass(frozen=True)
+class Message:
+    """One MQTT message and the moment it should be sent."""
+
+    topic: str
+    payload: str
+    at: datetime
 
 
 def read_to_payload(read: Read) -> str:
@@ -54,29 +65,64 @@ def read_to_payload(read: Read) -> str:
     )
 
 
-def print_reads(reads: Sequence[Read]) -> None:
+def gate_event_to_payload(event: GateEvent) -> str:
+    """Serialise one beam-break event.
+
+    Same shape of decision as a read: the four fields are the four columns
+    of gate_events. The gate reports which beam of which gate changed and
+    when; which portal that gate belongs to is warehouse configuration,
+    exactly as antenna numbers are.
+    """
+    return json.dumps(
+        {
+            "gate_id": event.gate_id,
+            "beam": event.beam,
+            "state": event.state,
+            "occurred_at": event.occurred_at.isoformat(),
+        }
+    )
+
+
+def read_messages(reads: Sequence[Read], topic_base: str) -> list[Message]:
+    return [
+        Message(f"{topic_base}/{r.reader_id}", read_to_payload(r), r.read_at)
+        for r in reads
+    ]
+
+
+def gate_messages(events: Sequence[GateEvent], topic_base: str) -> list[Message]:
+    return [
+        Message(f"{topic_base}/{e.gate_id}", gate_event_to_payload(e), e.occurred_at)
+        for e in events
+    ]
+
+
+def print_messages(messages: Sequence[Message]) -> None:
     """Dry run: write the messages to the screen instead of publishing them."""
-    for read in reads:
-        print(read_to_payload(read))
+    for message in messages:
+        print(f"{message.topic}  {message.payload}")
 
 
-def publish_reads(
-    reads: Sequence[Read],
+def publish_messages(
+    messages: Sequence[Message],
     *,
     host: str,
     port: int,
-    topic_base: str,
     username: str = "",
     password: str = "",
     speed: float = 1.0,
 ) -> None:
-    """Publish reads to MQTT, pacing them to match their own timestamps.
+    """Publish messages to MQTT, pacing them to match their own timestamps.
+
+    Tag reads and beam events share one timeline, so a gate crossing lands
+    in the middle of the reads it belongs to, the way it would in the
+    warehouse.
 
     speed=1.0 publishes in real time — a 1.8 second pass takes 1.8 seconds.
     Higher values compress it; speed=0 publishes as fast as the broker will
     accept, which is what the throughput test wants.
     """
-    if not reads:
+    if not messages:
         print("nothing to publish", file=sys.stderr)
         return
 
@@ -94,32 +140,28 @@ def publish_reads(
 
     client.loop_start()
 
-    first_read_at = reads[0].read_at
+    first_at = messages[0].at
     started = time.monotonic()
     published = 0
     try:
-        for read in reads:
+        for message in messages:
             if speed > 0:
-                # Where this read belongs on the wall clock, relative to when
-                # we started publishing.
-                due = (read.read_at - first_read_at).total_seconds() / speed
+                # Where this message belongs on the wall clock, relative to
+                # when we started publishing.
+                due = (message.at - first_at).total_seconds() / speed
                 behind = due - (time.monotonic() - started)
                 if behind > 0:
                     time.sleep(behind)
-            client.publish(
-                f"{topic_base}/{read.reader_id}",
-                read_to_payload(read),
-                qos=QOS_AT_LEAST_ONCE,
-            )
+            client.publish(message.topic, message.payload, qos=QOS_AT_LEAST_ONCE)
             published += 1
     finally:
-        # Wait for the queue to drain so we do not report reads we dropped.
+        # Wait for the queue to drain so we do not report messages we dropped.
         client.loop_stop()
         client.disconnect()
 
     wall_seconds = time.monotonic() - started
     rate = published / wall_seconds if wall_seconds > 0 else float(published)
     print(
-        f"published {published} reads to {topic_base}/... "
-        f"in {wall_seconds:.2f}s ({rate:.0f} reads/sec)"
+        f"published {published} messages "
+        f"in {wall_seconds:.2f}s ({rate:.0f} messages/sec)"
     )

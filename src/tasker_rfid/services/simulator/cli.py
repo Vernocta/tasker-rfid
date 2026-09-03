@@ -18,16 +18,20 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
-from ...config import antennas_for_portal
+from ...config import antennas_for_portal, gate_id_for_portal
 from .model import (
+    BOX_BEAM_BLOCKED_S,
+    PALLET_BEAM_BLOCKED_S,
+    GateEvent,
     Read,
     Tag,
     attempt_hz_per_tag,
+    gate_crossing,
     merge,
     pass_reads,
     stray_reads,
 )
-from .publisher import print_reads, publish_reads
+from .publisher import gate_messages, print_messages, publish_messages, read_messages
 
 PORTALS = ["ENTRANCE", "EXIT"]
 
@@ -44,6 +48,26 @@ PALLET_STAGGER_S = 0.25
 def load_antennas(portal: str) -> list[int]:
     """Which antennas belong to this portal, from config/tasker.yaml."""
     return antennas_for_portal(portal)
+
+
+def crossing_for(
+    portal: str,
+    start: datetime,
+    rng: random.Random,
+    *,
+    blocked_s: float,
+    reverse: bool = False,
+) -> list[GateEvent]:
+    """Beam events for a portal that has an IR gate; nothing for one that does not.
+
+    Only the exit is gated. SPEC.md section 4: the entrance resolves
+    direction from the state machine alone, so a pass through the entrance
+    produces tag reads and no beam events at all.
+    """
+    gate_id = gate_id_for_portal(portal)
+    if not gate_id:
+        return []
+    return gate_crossing(gate_id, start, rng, blocked_s=blocked_s, reverse=reverse)
 
 
 def make_tid(rng: random.Random) -> str:
@@ -79,30 +103,49 @@ def now_utc() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-def cmd_box(args: argparse.Namespace, rng: random.Random) -> list[Read]:
+def cmd_box(args: argparse.Namespace, rng: random.Random) -> tuple[list[Read], list[GateEvent]]:
     """One container carried through one portal, the ordinary case."""
     antennas = load_antennas(args.portal)
     tag = make_tag(args.tid, rng)
-    print(f"box {tag.tid} through {args.portal} on antennas {antennas}", file=sys.stderr)
-    return pass_reads(tag, args.reader_id, antennas, now_utc(), rng)
+    start = now_utc()
+    reads = pass_reads(tag, args.reader_id, antennas, start, rng)
+    gates = crossing_for(args.portal, start, rng, blocked_s=BOX_BEAM_BLOCKED_S)
+    print(
+        f"box {tag.tid} through {args.portal} on antennas {antennas}"
+        + (f", breaking {len(gates)//2} beams (outbound)" if gates else ", no IR gate"),
+        file=sys.stderr,
+    )
+    return reads, gates
 
 
-def cmd_reverse(args: argparse.Namespace, rng: random.Random) -> list[Read]:
-    """A container carried back out the way it came in.
+def cmd_reverse(args: argparse.Namespace, rng: random.Random) -> tuple[list[Read], list[GateEvent]]:
+    """A container carried back the way it came.
 
-    Identical to `box` except the antennas peak in the opposite order. SPEC.md
-    section 7 expects this to end up as an ILLEGAL_TRANSITION anomaly.
+    Identical to `box` except everything happens in the opposite order: the
+    antennas peak the other way round, and at a gated portal the beams break
+    the other way round too. SPEC.md section 7 expects this to end up as an
+    ILLEGAL_TRANSITION anomaly.
     """
     antennas = load_antennas(args.portal)
     tag = make_tag(args.tid, rng)
+    start = now_utc()
+    reads = pass_reads(tag, args.reader_id, antennas, start, rng, reverse=True)
+    gates = crossing_for(
+        args.portal, start, rng, blocked_s=BOX_BEAM_BLOCKED_S, reverse=True
+    )
     print(
-        f"reverse pass of {tag.tid} through {args.portal} on antennas {antennas}",
+        f"reverse pass of {tag.tid} through {args.portal} on antennas {antennas}"
+        + (
+            f", breaking {len(gates)//2} beams (inbound)"
+            if gates
+            else ", no IR gate at this portal"
+        ),
         file=sys.stderr,
     )
-    return pass_reads(tag, args.reader_id, antennas, now_utc(), rng, reverse=True)
+    return reads, gates
 
 
-def cmd_stray(args: argparse.Namespace, rng: random.Random) -> list[Read]:
+def cmd_stray(args: argparse.Namespace, rng: random.Random) -> tuple[list[Read], list[GateEvent]]:
     """A box parked within range of an antenna, read over and over."""
     antennas = load_antennas(args.portal)
     tag = make_tag(args.tid, rng)
@@ -111,10 +154,12 @@ def cmd_stray(args: argparse.Namespace, rng: random.Random) -> list[Read]:
         f"on antennas {antennas}",
         file=sys.stderr,
     )
-    return stray_reads(tag, args.reader_id, antennas, now_utc(), args.duration, rng)
+    # A parked box never crosses the beams; that is exactly what makes it a
+    # stray rather than a movement.
+    return stray_reads(tag, args.reader_id, antennas, now_utc(), args.duration, rng), []
 
 
-def cmd_pallet(args: argparse.Namespace, rng: random.Random) -> list[Read]:
+def cmd_pallet(args: argparse.Namespace, rng: random.Random) -> tuple[list[Read], list[GateEvent]]:
     """A loaded pallet through a portal: the pallet tag plus its boxes.
 
     Each box has a --miss-rate chance of producing no reads at all — shadowed
@@ -143,16 +188,20 @@ def cmd_pallet(args: argparse.Namespace, rng: random.Random) -> list[Read]:
         )
         streams.append(pass_reads(tag, args.reader_id, antennas, offset, rng, attempt_hz=hz))
 
+    # One pallet is one crossing, however many tags ride on it.
+    gates = crossing_for(args.portal, start, rng, blocked_s=PALLET_BEAM_BLOCKED_S)
+
     print(
         f"pallet {pallet_tag.tid} through {args.portal} on antennas {antennas}: "
         f"{args.boxes} boxes declared, {len(present)} readable, {missed} missed "
-        f"(miss-rate {args.miss_rate})",
+        f"(miss-rate {args.miss_rate})"
+        + (", one gate crossing (outbound)" if gates else ", no IR gate"),
         file=sys.stderr,
     )
-    return merge(*streams)
+    return merge(*streams), gates
 
 
-def cmd_burst(args: argparse.Namespace, rng: random.Random) -> list[Read]:
+def cmd_burst(args: argparse.Namespace, rng: random.Random) -> tuple[list[Read], list[GateEvent]]:
     """Throughput test: a flood of reads, to prove nothing is dropped.
 
     SPEC.md section 10 acceptance criterion 4 is 900 reads/sec sustained
@@ -182,7 +231,8 @@ def cmd_burst(args: argparse.Namespace, rng: random.Random) -> list[Read]:
         f"{args.duration}s ({args.count / args.duration:.0f} reads/sec)",
         file=sys.stderr,
     )
-    return reads
+    # A throughput test, not a movement: no gate crossing.
+    return reads, []
 
 
 COMMANDS = {
@@ -283,18 +333,27 @@ def main() -> None:
         sys.exit("ERROR: --speed cannot be negative")
 
     rng = random.Random(args.seed)
-    reads = COMMANDS[args.command](args, rng)
+    reads, gates = COMMANDS[args.command](args, rng)
+
+    # Reads and beam events go onto one timeline, so the crossing lands in
+    # the middle of the reads it belongs to.
+    messages = read_messages(reads, os.getenv("MQTT_TOPIC", "tasker/reads"))
+    messages += gate_messages(gates, os.getenv("MQTT_GATE_TOPIC", "tasker/gates"))
+    messages.sort(key=lambda m: m.at)
 
     if args.dry_run:
-        print_reads(reads)
-        print(f"{len(reads)} reads (dry run, nothing published)", file=sys.stderr)
+        print_messages(messages)
+        print(
+            f"{len(reads)} reads + {len(gates)} beam events "
+            "(dry run, nothing published)",
+            file=sys.stderr,
+        )
         return
 
-    publish_reads(
-        reads,
+    publish_messages(
+        messages,
         host=os.getenv("MQTT_HOST", "localhost"),
         port=int(os.getenv("MQTT_PORT", "1883")),
-        topic_base=os.getenv("MQTT_TOPIC", "tasker/reads"),
         username=os.getenv("MQTT_USERNAME", ""),
         password=os.getenv("MQTT_PASSWORD", ""),
         speed=args.speed,

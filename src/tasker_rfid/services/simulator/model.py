@@ -246,3 +246,91 @@ def merge(*read_lists: list[Read]) -> list[Read]:
         combined.extend(reads)
     combined.sort(key=lambda r: r.read_at)
     return combined
+
+
+# ---------------------------------------------------------------------------
+# The IR beam gate at the exit portal.
+#
+# Two beams a few centimetres apart across the doorway. INNER faces the
+# warehouse, OUTER faces the street. Whatever passes breaks one, then the
+# other, and the order says which way it went. SPEC.md section 4 layer 3.
+# ---------------------------------------------------------------------------
+
+BEAM_SEPARATION_S = 0.04
+"""Time between the two beams breaking.
+
+A few centimetres apart, crossed at roughly walking pace. Small, but it
+is the entire direction signal, so the gap has to be modelled honestly.
+"""
+
+BEAM_SEPARATION_JITTER_S = 0.015
+"""People and forklifts do not travel at a constant speed."""
+
+BOX_BEAM_BLOCKED_S = 0.35
+"""How long a single box keeps a beam broken as it passes through."""
+
+PALLET_BEAM_BLOCKED_S = 1.0
+"""A loaded pallet is longer, so it blocks each beam for longer."""
+
+BEAM_INNER = "INNER"
+BEAM_OUTER = "OUTER"
+BEAM_BROKEN = "BROKEN"
+BEAM_CLEAR = "CLEAR"
+
+
+@dataclass(frozen=True)
+class GateEvent:
+    """One beam changing state, as the gate controller would report it."""
+
+    gate_id: str
+    beam: str
+    state: str
+    occurred_at: datetime
+
+
+def gate_crossing(
+    gate_id: str,
+    start: datetime,
+    rng: random.Random,
+    *,
+    duration_s: float = PASS_DURATION_S,
+    blocked_s: float = BOX_BEAM_BLOCKED_S,
+    reverse: bool = False,
+) -> list[GateEvent]:
+    """The four beam events produced by something crossing the gate.
+
+    Timed to the middle of the tag pass, because the beams sit at the
+    centre of the portal while the RF field reaches well beyond it. That
+    is why a crossing window always falls inside its observation window.
+
+    Going out, INNER breaks first. `reverse` swaps them, which is what
+    something being carried back in through the exit looks like.
+    """
+    centre = duration_s / 2
+    separation = max(
+        0.005, BEAM_SEPARATION_S + rng.gauss(0, BEAM_SEPARATION_JITTER_S)
+    )
+
+    first, second = (BEAM_INNER, BEAM_OUTER)
+    if reverse:
+        first, second = second, first
+
+    first_at = centre - separation / 2
+    second_at = centre + separation / 2
+
+    def event(beam: str, state: str, offset_s: float) -> GateEvent:
+        return GateEvent(
+            gate_id=gate_id,
+            beam=beam,
+            state=state,
+            occurred_at=start + timedelta(seconds=offset_s),
+        )
+
+    events = [
+        event(first, BEAM_BROKEN, first_at),
+        event(second, BEAM_BROKEN, second_at),
+        event(first, BEAM_CLEAR, first_at + blocked_s),
+        event(second, BEAM_CLEAR, second_at + blocked_s),
+    ]
+    events.sort(key=lambda e: e.occurred_at)
+    return events
