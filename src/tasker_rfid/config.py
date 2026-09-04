@@ -12,6 +12,7 @@ instead of crashing.
 
 import os
 from dataclasses import dataclass
+from datetime import time
 from pathlib import Path
 from typing import Any
 
@@ -137,3 +138,35 @@ def ir_gate_timeout_ms(portal: str, config: dict[str, Any] | None = None) -> int
     section = (config if config is not None else load_config()).get("portals") or {}
     value = (section.get(portal.lower()) or {}).get("ir_gate_timeout_ms")
     return int(value) if value else DEFAULT_IR_GATE_TIMEOUT_MS
+
+
+@dataclass(frozen=True)
+class Health:
+    """SPEC.md section 8, `health:`."""
+
+    no_read_alert_hours: int = 4
+    working_hours: str = "08:00-18:00"
+    timezone: str = "America/Argentina/Buenos_Aires"
+
+    def working_hours_range(self) -> tuple[time, time]:
+        """Parse "08:00-18:00" into two times."""
+        try:
+            opens, closes = self.working_hours.split("-")
+            return (
+                time.fromisoformat(opens.strip()),
+                time.fromisoformat(closes.strip()),
+            )
+        except ValueError:
+            return time(8, 0), time(18, 0)
+
+
+def load_health(config: dict[str, Any] | None = None) -> Health:
+    section = (config if config is not None else load_config()).get("health") or {}
+    defaults = Health()
+    return Health(
+        no_read_alert_hours=int(
+            section.get("no_read_alert_hours", defaults.no_read_alert_hours)
+        ),
+        working_hours=str(section.get("working_hours", defaults.working_hours)),
+        timezone=str(section.get("timezone", defaults.timezone)),
+    )

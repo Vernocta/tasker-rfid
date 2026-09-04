@@ -79,6 +79,20 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tasker}:${POSTGRES_PASSWORD:-tasker}@postgres:5432/${POSTGRES_DB:-tasker}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
+  api:
+    build: .
+    container_name: tasker-api
+    restart: unless-stopped
+    command: ["tasker-api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tasker}:${POSTGRES_PASSWORD:-tasker}@postgres:5432/${POSTGRES_DB:-tasker}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
 volumes:
   postgres_data:
   mosquitto_data:

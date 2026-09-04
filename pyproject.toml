@@ -10,6 +10,9 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "paho-mqtt>=2.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "psycopg_pool>=3.2",
 ]
 
 [project.scripts]
@@ -18,10 +21,12 @@ sim = "tasker_rfid.services.simulator.cli:main"
 tasker-ingest = "tasker_rfid.services.ingest.service:main"
 tasker-debouncer = "tasker_rfid.services.debouncer.service:main"
 tasker-state-engine = "tasker_rfid.services.state_engine.service:main"
+tasker-api = "tasker_rfid.services.api.app:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "httpx>=0.27",
 ]
 
 [build-system]
