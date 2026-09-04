@@ -8,27 +8,24 @@ from ..schemas import StockHolder, StockLine
 
 router = APIRouter(tags=["stock"])
 
-# SPEC.md section 3.1 gives this query with one extra condition:
+# SPEC.md section 3.1, matching the corrected version there.
+#
+# An earlier version of the spec had an extra condition on this query:
 #
 #     AND c.parent_id IS NULL          -- avoid double-counting nested containers
 #
-# That condition is dropped here, deliberately, and SPEC.md should be
-# corrected to match. In the configured mode (`hybrid`) the boxes carry
-# the contents and the pallet carries none — SPEC.md section 3 says a
-# pallet whose contents come from its child boxes has no contents rows of
-# its own. Boxes on a pallet have parent_id set, so the condition filters
-# out precisely the rows holding the quantities, and any stock sitting on
-# a pallet disappears from the count.
+# which was wrong, and SPEC.md has been corrected. In the configured mode
+# (`hybrid`) the boxes carry the contents and the pallet carries none, so
+# that condition filtered out exactly the rows holding the quantities and
+# stock sitting on a pallet vanished from the count.
 #
 # Nothing is double-counted without it: a container_contents row belongs
 # to exactly one container, so summing the contents of every IN_STOCK
-# container counts each row once. That is the same assumption SPEC.md's
-# own consumption query in section 3.1 already makes -- it has no
-# parent_id condition either. This makes the two agree.
+# container counts each row once. The consumption query makes the same
+# assumption.
 #
 # The one thing that would double-count is putting contents rows on a
-# pallet AND on the boxes it carries. SPEC.md section 3 already forbids
-# that; keep to it.
+# pallet AND on the boxes it carries. SPEC.md section 3 forbids that.
 STOCK_ON_HAND_SQL = """
     SELECT s.sku_id, s.name, SUM(cc.quantity) AS boxes
     FROM containers c

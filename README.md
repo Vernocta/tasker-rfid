@@ -627,7 +627,7 @@ REGISTERED  ->  IN_STOCK  ->  DISPATCHED
 |---|---|---|
 | Entrance, or exit inbound | `REGISTERED` | → `IN_STOCK` |
 | Entrance, or exit inbound | `IN_STOCK` | nothing at all |
-| Entrance, or exit inbound | `DISPATCHED`, reusable | → `REGISTERED` (empty pallet back) |
+| Entrance, or exit inbound | `DISPATCHED`, reusable | → `REGISTERED`; **children detached, left `DISPATCHED`** |
 | Entrance, or exit inbound | `DISPATCHED`, not reusable | `ILLEGAL_TRANSITION` |
 | Exit, outbound | `IN_STOCK` | → `DISPATCHED`, needs an open session |
 | Exit, outbound | `REGISTERED` | `ILLEGAL_TRANSITION` |
@@ -641,11 +641,19 @@ ten minutes produces thousands of reads and no stock movement at all —
 not because anything detects and discards duplicates, but because there is
 nothing for a repeat read to do (SPEC.md §2.3).
 
-Two rows are judgement calls the spec does not state outright, both
-resolved the same way — surface it, do not guess:
+Row 3 is the one exception to "moving a pallet moves everything on it".
+**A returning pallet comes back empty.** Its boxes are at the customer's
+premises, so they are detached and left `DISPATCHED`. Bringing them back
+because their pallet crossed the door would invent stock that is not in the
+building — and it would show up in `GET /stock` as real.
+
+Two rows are judgement calls the spec did not state outright, both resolved
+the same way — surface it, do not guess:
 
 - **A dispatched box coming back** is a customer return, which this system
   does not model. It raises an anomaly rather than quietly changing stock.
+  That is the route a genuine return takes: a person decides, rather than
+  stock reappearing at the door.
 - **Goods leaving that were never booked into stock** skips a state, so a
   person looks rather than the system inventing the missing step.
 
@@ -655,7 +663,9 @@ resolved the same way — surface it, do not guess:
   `dispatch_session`. Without one the container stays put and a
   `NO_SESSION` anomaly is raised (SPEC.md §2.5).
 - **Moving a pallet moves everything on it**, however deep the nesting, in
-  one transaction — including boxes whose tags were never read.
+  one transaction — including boxes whose tags were never read. The single
+  exception is a reusable container coming back: it returns empty, and its
+  children are detached rather than moved.
 - **A short load is recorded, not blocked.** A pallet read with fewer boxes
   than are attached still leaves, and raises `SHORT_PALLET` alongside.
 - Each observation is handled in its own transaction: the status changes,
@@ -682,7 +692,7 @@ simulator's read model.
 uv run pytest tests/unit
 ```
 
-*Expect:* `66 passed in 0.10s`
+*Expect:* `68 passed in 0.17s`
 
 **Failure-mode tests — the whole system, end to end.** These publish real
 MQTT messages with the simulator and wait for ingest, the debouncer and
@@ -695,7 +705,7 @@ uv run alembic upgrade head
 uv run pytest tests/integration -v
 ```
 
-*Expect:* `31 passed`. It takes about two and a half minutes, because the tests wait for the real 2-second quiet periods
+*Expect:* `33 passed`. It takes about two and a half minutes, because the tests wait for the real 2-second quiet periods
 rather than pretending.
 
 ```
@@ -734,6 +744,7 @@ behind in the same tables the warehouse will use.
 | Container counted twice | the second exit read is an anomaly, not a second dispatch |
 | Exit read, no session open | `NO_SESSION`; the container stays `IN_STOCK` |
 | Carried back out the entrance | `ILLEGAL_TRANSITION`; stock unchanged |
+| Empty pallet returns | pallet reusable again; its boxes stay `DISPATCHED` |
 | Pallet read but boxes missed | `SHORT_PALLET` naming how many are missing |
 | Container missed at portal | a box whose tag never answers still leaves on its pallet |
 | Direction unresolved at the exit | `NO_DIRECTION`; nothing is dispatched on a guess |
