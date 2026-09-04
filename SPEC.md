@@ -218,12 +218,27 @@ CREATE TABLE cycle_count_items (
 
 **Stock on hand:**
 ```sql
+-- No parent_id filter. An earlier version of this query had
+--     AND c.parent_id IS NULL      -- avoid double-counting nested containers
+-- which was wrong. In box_level and hybrid mode the boxes carry the
+-- container_contents rows and the pallet carries none (see the note on
+-- container_contents above), and boxes on a pallet have parent_id set --
+-- so that filter removed exactly the rows holding the quantities, and
+-- any stock sitting on a pallet vanished from the count.
+--
+-- Nothing is double-counted without it: a container_contents row belongs
+-- to exactly one container, so summing the contents of every IN_STOCK
+-- container counts each row once. This is the same assumption the
+-- consumption query below already makes.
+--
+-- The one thing that WOULD double-count is putting contents rows on a
+-- pallet AND on the boxes it carries. Do not do that; a pallet whose
+-- contents come from its child boxes has no contents rows of its own.
 SELECT s.sku_id, s.name, SUM(cc.quantity) AS boxes
 FROM containers c
 JOIN container_contents cc ON cc.container_id = c.container_id
 JOIN skus s ON s.sku_id = cc.sku_id
 WHERE c.status = 'IN_STOCK'
-  AND c.parent_id IS NULL          -- avoid double-counting nested containers
 GROUP BY s.sku_id, s.name
 ORDER BY s.name;
 ```
@@ -269,6 +284,26 @@ Rules:
 - Moving a pallet moves all children in the same transaction
 - Unknown TID → `UNKNOWN_TID` anomaly, not counted
 - Reusable containers (pallets, totes) return to `REGISTERED` on re-entry rather than being consumed
+- **A returning reusable container comes back empty.** Its children are detached (`parent_id` set to `NULL`) and left in whatever status they held — they do **not** follow it back. The boxes are at the customer's premises; restocking them because their pallet crossed the door would invent stock that is not in the building. This is the one case where a container moves and its children do not.
+
+Transition table:
+
+| Portal / direction | Status now | Result |
+|---|---|---|
+| Entrance, or exit inbound | `REGISTERED` | → `IN_STOCK` |
+| Entrance, or exit inbound | `IN_STOCK` | no-op — this is what makes double-counting impossible |
+| Entrance, or exit inbound | `DISPATCHED`, reusable | → `REGISTERED`, **children detached and left `DISPATCHED`** |
+| Entrance, or exit inbound | `DISPATCHED`, not reusable | `ILLEGAL_TRANSITION` |
+| Exit, outbound | `IN_STOCK` | → `DISPATCHED`, requires an open `dispatch_session` |
+| Exit, outbound | `REGISTERED` | `ILLEGAL_TRANSITION` — leaving without ever entering stock |
+| Exit, outbound | `DISPATCHED` | `ILLEGAL_TRANSITION` — it has already gone |
+| Exit, direction `UNKNOWN` | any | `NO_DIRECTION`, nothing moves |
+| Any, TID not registered | — | `UNKNOWN_TID`, not counted |
+
+A customer return is a separate process, not a pallet movement. A box that
+genuinely comes back is read in its own right, and being `DISPATCHED` and not
+reusable it raises `ILLEGAL_TRANSITION` for a person to judge — it is never
+silently restocked at the door.
 
 ---
 
