@@ -17,7 +17,8 @@ Rules, from SPEC.md section 4:
 - A read from a tag with no container record becomes an UNKNOWN_TID
   anomaly and is not counted.
 - Reusable containers return to REGISTERED on re-entry rather than being
-  consumed.
+  consumed, and they come back empty: whatever was on them is detached and
+  left DISPATCHED.
 
 Each observation is handled in its own transaction: the status changes,
 the movement rows, any anomaly, and marking the observation processed all
@@ -145,6 +146,8 @@ INSERT_ANOMALY_SQL = """
     VALUES (%s, %s, %s, %s, %s)
 """
 
+DETACH_CHILDREN_SQL = "UPDATE containers SET parent_id = NULL WHERE parent_id = %s"
+
 MARK_PROCESSED_SQL = "UPDATE observations SET processed = TRUE WHERE id = %s"
 
 
@@ -162,6 +165,7 @@ class StateEngine:
         self.movements = 0
         self.anomalies = 0
         self.no_ops = 0
+        self.children_detached = 0
         # Observation id -> when this service first saw it, for the wait above.
         self.first_seen: dict[int, float] = {}
 
@@ -260,6 +264,48 @@ class StateEngine:
             moved += 1
         self.movements += moved
         return moved
+
+    def return_reusable_container(
+        self,
+        cur,
+        *,
+        container_id: int,
+        tid: str,
+        from_status: str,
+        to_status: str,
+        portal: str,
+        occurred_at: datetime,
+    ) -> int:
+        """A reusable container comes back, and comes back empty.
+
+        The pallet or tote itself is moved. Whatever the system still
+        believes is on it is detached and left exactly where it was:
+        those boxes are at the customer's premises, and restocking them
+        because their pallet crossed the door would invent stock that is
+        not in the building.
+
+        A box that genuinely comes back is read at the portal in its own
+        right, and being DISPATCHED and not reusable it raises an
+        ILLEGAL_TRANSITION for a person to judge. Customer returns are a
+        separate process, not a side effect of a pallet movement.
+        """
+        cur.execute(UPDATE_STATUS_SQL, (to_status, occurred_at, portal, container_id))
+        cur.execute(
+            INSERT_MOVEMENT_SQL,
+            (container_id, from_status, to_status, portal, None, occurred_at, SOURCE_PORTAL),
+        )
+        self.movements += 1
+
+        cur.execute(DETACH_CHILDREN_SQL, (container_id,))
+        detached = cur.rowcount
+        if detached:
+            self.children_detached += detached
+            log.info(
+                "%s came back empty: %d container(s) detached and left as they were",
+                tid,
+                detached,
+            )
+        return detached
 
     def check_short_pallet(
         self,
@@ -439,26 +485,38 @@ class StateEngine:
                         return
                     session_id = session_row[0]
 
-                moved = self.move_container_tree(
-                    cur,
-                    root_id=container_id,
-                    to_status=decision.to_status,
-                    portal=portal,
-                    session_id=session_id,
-                    occurred_at=occurred_at,
-                )
+                if decision.detach_children:
+                    moved = self.return_reusable_container(
+                        cur,
+                        container_id=container_id,
+                        tid=tid,
+                        from_status=status,
+                        to_status=decision.to_status,
+                        portal=portal,
+                        occurred_at=occurred_at,
+                    )
+                else:
+                    moved = self.move_container_tree(
+                        cur,
+                        root_id=container_id,
+                        to_status=decision.to_status,
+                        portal=portal,
+                        session_id=session_id,
+                        occurred_at=occurred_at,
+                    )
 
-                # A pallet that moved with boxes missing is still a move,
-                # but the shortfall is recorded alongside it.
-                self.check_short_pallet(
-                    cur,
-                    container_id=container_id,
-                    tid=tid,
-                    portal=portal,
-                    first_read=first_read,
-                    last_read=last_read,
-                    occurred_at=occurred_at,
-                )
+                    # A pallet that moved with boxes missing is still a move,
+                    # but the shortfall is recorded alongside it. A container
+                    # coming back empty is not a load, so it is not counted.
+                    self.check_short_pallet(
+                        cur,
+                        container_id=container_id,
+                        tid=tid,
+                        portal=portal,
+                        first_read=first_read,
+                        last_read=last_read,
+                        occurred_at=occurred_at,
+                    )
 
                 cur.execute(MARK_PROCESSED_SQL, (obs_id,))
                 conn.commit()
@@ -497,11 +555,12 @@ class StateEngine:
 
             if time.monotonic() - last_stats >= STATS_INTERVAL_S:
                 log.info(
-                    "observations=%d movements=%d anomalies=%d no_ops=%d",
+                    "observations=%d movements=%d anomalies=%d no_ops=%d detached=%d",
                     self.processed,
                     self.movements,
                     self.anomalies,
                     self.no_ops,
+                    self.children_detached,
                 )
                 last_stats = time.monotonic()
 

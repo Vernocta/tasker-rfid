@@ -46,6 +46,15 @@ class Decision:
     reason: str = ""
     """Plain words for the log and the anomaly detail."""
 
+    detach_children: bool = False
+    """Break the link to whatever was on this container, without moving it.
+
+    Set when a reusable container comes back. A pallet returns empty: the
+    boxes it carried are at the customer's premises and must stay
+    DISPATCHED. Moving them back with the pallet would put stock that is
+    no longer in the building back on the shelf.
+    """
+
     @property
     def is_no_op(self) -> bool:
         return self.to_status is None and self.anomaly is None
@@ -64,10 +73,19 @@ def inbound(status: str, reusable: bool) -> Decision:
     if status == DISPATCHED:
         if reusable:
             # SPEC.md section 4: reusable containers return to REGISTERED on
-            # re-entry rather than being consumed. An empty pallet coming
-            # back is normal and expected.
+            # re-entry rather than being consumed, and come back empty. The
+            # boxes they carried are at the customer's premises, so they are
+            # detached and left DISPATCHED.
+            #
+            # If a box genuinely does come back, it is read at the portal in
+            # its own right, and lands two lines below: DISPATCHED and not
+            # reusable, which is an ILLEGAL_TRANSITION for a person to judge.
+            # A customer return is a separate process, not a side effect of
+            # a pallet crossing the door.
             return Decision(
-                to_status=REGISTERED, reason="reusable container returned empty"
+                to_status=REGISTERED,
+                detach_children=True,
+                reason="reusable container returned empty",
             )
         # A box that left the building is back. That may be a customer
         # return, which this system does not model, so it is surfaced for
