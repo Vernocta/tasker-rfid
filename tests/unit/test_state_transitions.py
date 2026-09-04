@@ -78,6 +78,28 @@ def test_a_dispatched_pallet_coming_back_is_ready_to_use_again():
     assert returning(DISPATCHED, reusable=True).to_status == REGISTERED
 
 
+def test_a_returning_pallet_comes_back_empty():
+    """Its boxes are at the customer. They must not follow it home.
+
+    The only case where a container moves and its children do not.
+    """
+    for decision in (
+        entrance(DISPATCHED, reusable=True),
+        returning(DISPATCHED, reusable=True),
+    ):
+        assert decision.to_status == REGISTERED
+        assert decision.detach_children is True
+
+
+def test_nothing_else_detaches_children():
+    """A loaded pallet going out takes its boxes with it, as always."""
+    assert leaving(IN_STOCK).detach_children is False
+    assert entrance(REGISTERED).detach_children is False
+    assert entrance(IN_STOCK).detach_children is False
+    assert entrance(DISPATCHED, reusable=False).detach_children is False
+    assert leaving(DISPATCHED).detach_children is False
+
+
 # -- Direction at the exit --------------------------------------------------
 
 

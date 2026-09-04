@@ -159,7 +159,7 @@ def test_stock_counts_boxes_that_have_come_through_the_entrance(db, api):
 
 
 def test_stock_on_a_pallet_is_still_stock(db, api):
-    """SPEC.md section 3.1's query drops this; see the note in routers/stock.py."""
+    """Regression: the old parent_id filter hid stock that was on a pallet."""
     pallet_tid = a_tid("APISTOCKPAL")
     box_tid = a_tid("APISTOCKBOX")
     api.post("/containers", json={"tid": pallet_tid, "kind": "PALLET", "reusable": True}).raise_for_status()

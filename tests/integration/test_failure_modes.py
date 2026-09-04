@@ -313,6 +313,58 @@ def test_an_empty_pallet_coming_back_is_ready_to_use_again(db):
     assert anomalies_for(db, tid) == []
 
 
+def test_a_returning_pallet_leaves_its_boxes_at_the_customer(db):
+    """A pallet comes back empty. Its boxes do not come back with it.
+
+    The boxes are at the customer's premises. Restocking them because
+    their pallet crossed the door would invent stock that is not in the
+    building, and it would show up in GET /stock as real.
+    """
+    pallet_tid = a_tid("RETURNPALLET")
+    pallet_id = register(
+        db, pallet_tid, kind="PALLET", status="DISPATCHED", reusable=True
+    )
+    box_tids = [a_tid(f"ATCUSTOMER{n}") for n in range(4)]
+    for box_tid in box_tids:
+        register(db, box_tid, status="DISPATCHED", parent_id=pallet_id)
+
+    sim("box", "--tid", pallet_tid, "--portal", "ENTRANCE", "--seed", "62")
+    wait_for_settled(db, pallet_tid, "the empty pallet coming back")
+
+    # The pallet is ready to load again.
+    assert status_of(db, pallet_tid) == "REGISTERED"
+
+    # The boxes are still at the customer, and no longer on the pallet.
+    for box_tid in box_tids:
+        assert status_of(db, box_tid) == "DISPATCHED", (
+            f"{box_tid} was restocked by its pallet coming back"
+        )
+        assert movements_for(db, box_tid) == [], f"{box_tid} was moved"
+
+    with db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM containers WHERE parent_id = %s", (pallet_id,)
+        )
+        assert cur.fetchone()[0] == 0, "the boxes are still attached to the pallet"
+
+
+def test_a_box_that_genuinely_comes_back_goes_to_the_anomaly_queue(db):
+    """A customer return is a separate process, not a pallet movement.
+
+    The box is read in its own right, and being DISPATCHED and not
+    reusable it lands in front of a person rather than being restocked.
+    """
+    tid = a_tid("REALRETURN")
+    register(db, tid, status="DISPATCHED")
+
+    sim("box", "--tid", tid, "--portal", "ENTRANCE", "--seed", "63")
+    wait_for_settled(db, tid, "the returned box")
+
+    assert status_of(db, tid) == "DISPATCHED"
+    assert movements_for(db, tid) == []
+    assert [kind for kind, _ in anomalies_for(db, tid)] == ["ILLEGAL_TRANSITION"]
+
+
 # ---------------------------------------------------------------------------
 # SPEC.md section 4:
 #   "Unknown TID -> UNKNOWN_TID anomaly, not counted"
