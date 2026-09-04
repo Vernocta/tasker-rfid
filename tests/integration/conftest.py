@@ -200,6 +200,23 @@ def wait_until(condition, description: str, timeout_s: float = PIPELINE_TIMEOUT_
     )
 
 
+def run_and_settle(db, tid: str, *sim_args: str) -> None:
+    """Publish reads with the simulator and wait for the result to land.
+
+    Waits for a NEW observation to appear before waiting for the pipeline
+    to go quiet. Without that first step this returns immediately on the
+    tag's previous observation, and the test races ahead of the read it
+    just published.
+    """
+    before = observation_count(db, tid)
+    sim(*sim_args)
+    wait_until(
+        lambda: observation_count(db, tid) > before,
+        f"a new observation of {tid} after: sim {' '.join(sim_args)}",
+    )
+    wait_for_settled(db, tid)
+
+
 def wait_for_settled(db, tid: str, description: str = "the pipeline to settle") -> None:
     """Wait until every observation of this tag has been through the state engine."""
 
