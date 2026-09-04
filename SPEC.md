@@ -170,7 +170,12 @@ CREATE TABLE movements (
   portal       TEXT,
   session_id   BIGINT REFERENCES dispatch_sessions(session_id),
   occurred_at  TIMESTAMPTZ NOT NULL,
-  source       TEXT NOT NULL         -- 'PORTAL','HANDHELD','MANUAL'
+  source       TEXT NOT NULL,        -- 'PORTAL','HANDHELD','MANUAL'
+  -- Both NULL for portal movements, which explain themselves: a reader
+  -- saw the tag. A movement typed in by a person does not, so a manual
+  -- correction must say why, and who decided.
+  reason       TEXT,
+  operator     TEXT
 );
 CREATE INDEX ON movements (container_id, occurred_at);
 CREATE INDEX ON movements (session_id);
@@ -278,6 +283,8 @@ Reject observations with `peak_rssi < rssi_floor` (default −65 dBm) or `read_c
 ### Layer 4 — State engine
 Apply the transition. **All status changes go through this module — no other code writes `containers.status`.**
 
+The one exception is a manual correction (`POST /containers/{tid}/correct`, section 6), and it is less an exception than a second door into the same room: the API calls into the state engine rather than writing the column itself, so there is still exactly one place in the codebase that sets it. Every correction records a movement with `source='MANUAL'`, a `reason` and an `operator`, so a hand-typed change is never indistinguishable from a read.
+
 Rules:
 - Illegal transitions → `anomalies`, never silently dropped
 - Exit read with no open `dispatch_session` → `NO_SESSION` anomaly
@@ -344,6 +351,7 @@ GET  /stock/{sku_id}                 containers holding this SKU
 GET  /containers/{tid}               full history
 POST /containers                     register a container + contents
 POST /containers/{tid}/children      attach child containers (pallet build)
+POST /containers/{tid}/correct       set status by hand {to_status, reason, operator}
 
 POST /dispatch-sessions              open (customer, order_ref)
 POST /dispatch-sessions/{id}/close   close
@@ -354,11 +362,27 @@ POST /cycle-counts/{id}/scan         {tid}
 POST /cycle-counts/{id}/close        variance report
 
 GET  /anomalies?resolved=false       queue
-POST /anomalies/{id}/resolve         disposition
+POST /anomalies/{id}/resolve         disposition; may trigger a correction
 
 GET  /reports/consumption            per customer per SKU per period
 GET  /health                         reader status, last read, queue depth
 ```
+
+**On `POST /containers/{tid}/correct`.** The readers cannot resolve everything.
+A container that went out but was never read at the exit stays `IN_STOCK` while
+it sits on a customer's shelf; a container whose tag has died stops answering
+altogether; an `ILLEGAL_TRANSITION` needs a person to decide what actually
+happened. A cycle count finds these, and this is how they are put right.
+
+A `reason` is required and is recorded on the movement together with the
+`operator` and `source='MANUAL'`. The correction applies to the named container
+only — a pallet's boxes are left alone, because a correction is a targeted
+decision about one container and cascading it silently would change things the
+operator did not ask for. Correct each container that genuinely needs it.
+
+`POST /anomalies/{id}/resolve` accepts an optional `correct_to_status`, which
+applies the correction in the same transaction as the disposition, so a decision
+and the change it implies cannot come apart.
 
 ---
 
