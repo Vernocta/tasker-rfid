@@ -18,6 +18,28 @@ from ..schemas import HealthReport
 
 router = APIRouter(tags=["health"])
 
+
+def reader_has_gone_quiet(
+    minutes_since_last_read: float | None,
+    within_working_hours: bool,
+    no_read_alert_hours: int,
+) -> bool:
+    """Should this reader's silence be treated as a fault?
+
+    SPEC.md section 7: alert if no read in four hours during working
+    hours. Outside working hours the warehouse is shut and silence is
+    exactly what a healthy reader produces, so the same silence means
+    nothing.
+
+    Pure, so the rule can be tested at both boundaries without waiting
+    four hours or caring what time the test runs.
+    """
+    if minutes_since_last_read is None:
+        return False
+    if not within_working_hours:
+        return False
+    return minutes_since_last_read > no_read_alert_hours * 60
+
 READERS_SQL = """
     SELECT reader_id,
            max(read_at) AS last_read_at,
@@ -69,7 +91,9 @@ def health(conn: psycopg.Connection = Depends(connection)) -> dict:
         healthy = True
         if last is not None:
             minutes = (datetime.now(last.tzinfo) - last).total_seconds() / 60
-            if within_working_hours and minutes > settings.no_read_alert_hours * 60:
+            if reader_has_gone_quiet(
+                minutes, within_working_hours, settings.no_read_alert_hours
+            ):
                 healthy = False
                 warnings.append(
                     f"{row['reader_id']} has not reported for "

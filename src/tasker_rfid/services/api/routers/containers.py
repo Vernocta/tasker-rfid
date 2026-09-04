@@ -9,8 +9,19 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg.rows import dict_row
 
+from ....services.state_engine.corrections import (
+    ContainerNotFound,
+    CorrectionRefused,
+    apply_manual_correction,
+)
 from ..db import connection, fetch_all, fetch_one
-from ..schemas import AttachChildren, ContainerDetail, ContainerSummary, NewContainer
+from ..schemas import (
+    AttachChildren,
+    ContainerDetail,
+    ContainerSummary,
+    ManualCorrection,
+    NewContainer,
+)
 
 router = APIRouter(tags=["containers"])
 
@@ -118,6 +129,46 @@ def attach_children(
             "UPDATE containers SET parent_id = %s WHERE tid = ANY(%s)",
             (parent["container_id"], body.child_tids),
         )
+    conn.commit()
+    return _detail(conn, tid)
+
+
+@router.post(
+    "/containers/{tid}/correct",
+    response_model=ContainerDetail,
+    summary="Put a container's status right by hand",
+    description=(
+        "The one way a status changes without a portal read, for the cases "
+        "the readers cannot resolve: a container that went out but was never "
+        "read at the exit, one whose tag has died, or an "
+        "`ILLEGAL_TRANSITION` that a person has looked into.\n\n"
+        "A reason is required and is recorded on the movement, along with "
+        "who made the decision and `source='MANUAL'`, so a hand-typed change "
+        "is never mistaken for a read.\n\n"
+        "The correction still goes through the state engine — this endpoint "
+        "calls into it rather than writing the status itself, so there "
+        "remains exactly one place in the system that sets that column.\n\n"
+        "Applies to the named container only. A pallet's boxes are left "
+        "alone: correct each container that genuinely needs it."
+    ),
+)
+def correct_container(
+    tid: str, body: ManualCorrection, conn: psycopg.Connection = Depends(connection)
+) -> dict:
+    try:
+        apply_manual_correction(
+            conn,
+            tid=tid,
+            to_status=body.to_status,
+            reason=body.reason,
+            operator=body.operator,
+        )
+    except ContainerNotFound as exc:
+        conn.rollback()
+        raise HTTPException(404, str(exc)) from exc
+    except CorrectionRefused as exc:
+        conn.rollback()
+        raise HTTPException(409, str(exc)) from exc
     conn.commit()
     return _detail(conn, tid)
 

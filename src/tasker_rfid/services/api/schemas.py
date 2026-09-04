@@ -56,6 +56,23 @@ class AttachChildren(BaseModel):
     )
 
 
+class ManualCorrection(BaseModel):
+    """Put a container's status right by hand, when a person knows better."""
+
+    to_status: str = Field(
+        description="REGISTERED, IN_STOCK or DISPATCHED",
+        examples=["DISPATCHED"],
+    )
+    reason: str = Field(
+        min_length=3,
+        description="Why. Recorded on the movement and never optional.",
+        examples=["Went out on SO-99312; tag not read at the exit."],
+    )
+    operator: str = Field(
+        min_length=1, description="Who made the decision.", examples=["mlopez"]
+    )
+
+
 class ContainerSummary(BaseModel):
     container_id: int
     tid: str
@@ -194,6 +211,15 @@ class ResolveAnomaly(BaseModel):
     resolved_by: str = Field(examples=["mlopez"])
     note: str | None = Field(
         default=None, description="What was done about it.", examples=["Recounted; tag replaced."]
+    )
+    correct_to_status: str | None = Field(
+        default=None,
+        description=(
+            "Optionally put the container's status right as part of "
+            "resolving. Records a manual correction with the note as its "
+            "reason. Leave it out to close the anomaly without touching stock."
+        ),
+        examples=["DISPATCHED"],
     )
 
 

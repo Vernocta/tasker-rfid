@@ -9,6 +9,11 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg.types.json import Jsonb
 
+from ....services.state_engine.corrections import (
+    ContainerNotFound,
+    CorrectionRefused,
+    apply_manual_correction,
+)
 from ..db import connection, fetch_all, fetch_one
 from ..schemas import AnomalySummary, ResolveAnomaly
 
@@ -75,7 +80,9 @@ def resolve(
     conn: psycopg.Connection = Depends(connection),
 ) -> dict:
     existing = fetch_one(
-        conn, "SELECT id, resolved, detail FROM anomalies WHERE id = %s", (anomaly_id,)
+        conn,
+        "SELECT id, tid, container_id, resolved, detail FROM anomalies WHERE id = %s",
+        (anomaly_id,),
     )
     if existing is None:
         raise HTTPException(404, f"No anomaly {anomaly_id}.")
@@ -85,6 +92,37 @@ def resolve(
     detail = dict(existing["detail"] or {})
     if body.note:
         detail["resolution_note"] = body.note
+
+    # Optionally put the container right in the same transaction, so a
+    # decision and the change it implies cannot come apart.
+    if body.correct_to_status:
+        if not existing["tid"]:
+            raise HTTPException(
+                422,
+                f"Anomaly {anomaly_id} names no tag, so there is nothing to correct.",
+            )
+        if not existing["container_id"]:
+            raise HTTPException(
+                422,
+                f"Tag '{existing['tid']}' has no container record, so its status "
+                "cannot be corrected. Register it first.",
+            )
+        try:
+            correction = apply_manual_correction(
+                conn,
+                tid=existing["tid"],
+                to_status=body.correct_to_status,
+                reason=body.note or f"Correction while resolving anomaly {anomaly_id}",
+                operator=body.resolved_by,
+            )
+        except ContainerNotFound as exc:
+            conn.rollback()
+            raise HTTPException(404, str(exc)) from exc
+        except CorrectionRefused as exc:
+            conn.rollback()
+            raise HTTPException(409, str(exc)) from exc
+        detail["corrected_to"] = correction.to_status
+        detail["corrected_from"] = correction.from_status
 
     with conn.cursor() as cur:
         cur.execute(
