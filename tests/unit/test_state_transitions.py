@@ -129,3 +129,40 @@ def test_the_entrance_needs_no_direction_at_all():
 def test_an_unrecognised_status_is_never_silently_accepted():
     assert entrance("SOMETHING_ELSE").anomaly == ILLEGAL_TRANSITION
     assert leaving("SOMETHING_ELSE").anomaly == ILLEGAL_TRANSITION
+
+
+# ---------------------------------------------------------------------------
+# Manual correction. SPEC.md section 6: the one status change that does not
+# come from a portal read.
+# ---------------------------------------------------------------------------
+
+
+def test_a_correction_can_reach_any_of_the_three_states():
+    """The point of a correction is to express what the machine could not."""
+    from tasker_rfid.services.state_engine.corrections import check_target_status
+
+    check_target_status(IN_STOCK, DISPATCHED)
+    check_target_status(DISPATCHED, IN_STOCK)
+    check_target_status(IN_STOCK, REGISTERED)
+    check_target_status(REGISTERED, DISPATCHED)
+
+
+def test_a_correction_to_a_status_that_does_not_exist_is_refused():
+    from tasker_rfid.services.state_engine.corrections import (
+        CorrectionRefused,
+        check_target_status,
+    )
+
+    with pytest.raises(CorrectionRefused, match="is not a status"):
+        check_target_status(IN_STOCK, "SOLD")
+
+
+def test_a_correction_that_changes_nothing_is_refused():
+    """It would record a movement where nothing moved."""
+    from tasker_rfid.services.state_engine.corrections import (
+        CorrectionRefused,
+        check_target_status,
+    )
+
+    with pytest.raises(CorrectionRefused, match="already IN_STOCK"):
+        check_target_status(IN_STOCK, IN_STOCK)
