@@ -692,7 +692,7 @@ simulator's read model.
 uv run pytest tests/unit
 ```
 
-*Expect:* `68 passed in 0.17s`
+*Expect:* `77 passed in 0.45s`
 
 **Failure-mode tests — the whole system, end to end.** These publish real
 MQTT messages with the simulator and wait for ingest, the debouncer and
@@ -705,7 +705,7 @@ uv run alembic upgrade head
 uv run pytest tests/integration -v
 ```
 
-*Expect:* `33 passed`. It takes about two and a half minutes, because the tests wait for the real 2-second quiet periods
+*Expect:* `46 passed`. It takes about three minutes, because the tests wait for the real 2-second quiet periods
 rather than pretending.
 
 ```
@@ -746,12 +746,12 @@ behind in the same tables the warehouse will use.
 | Carried back out the entrance | `ILLEGAL_TRANSITION`; stock unchanged |
 | Empty pallet returns | pallet reusable again; its boxes stay `DISPATCHED` |
 | Pallet read but boxes missed | `SHORT_PALLET` naming how many are missing |
-| Container missed at portal | a box whose tag never answers still leaves on its pallet |
+| Container missed at portal | a box whose tag never answers still leaves on its pallet; a standalone one is found by a cycle count and corrected |
 | Direction unresolved at the exit | `NO_DIRECTION`; nothing is dispatched on a guess |
 | Tag with no container record | `UNKNOWN_TID`; not counted |
 | Network drop / Postgres restart | ingest holds and retries — see *Never block, never drop* |
-| Reader offline | `/health`, step 7 |
-| Tag destroyed | cycle count reconciliation, step 7 |
+| Reader offline | `/health` goes `degraded` and names the silent reader |
+| Tag destroyed | cycle count finds it; box re-tagged, old record retired |
 
 ---
 
@@ -787,6 +787,7 @@ The raw specification, for other software to consume, is at
 | `GET /containers/{tid}` | one container's full history |
 | `POST /containers` | register a container and its contents |
 | `POST /containers/{tid}/children` | build a pallet |
+| `POST /containers/{tid}/correct` | put a status right by hand, with a reason |
 | `POST /dispatch-sessions` | open the dock for a customer |
 | `POST /dispatch-sessions/{id}/close` | close it, with a summary of what left |
 | `GET /dispatch-sessions/{id}` | what went out during a session |
@@ -798,15 +799,51 @@ The raw specification, for other software to consume, is at
 | `GET /reports/consumption` | boxes per customer per SKU |
 | `GET /health` | reader status, last read, queue depth |
 
-### The API never moves stock
+### The API never moves stock, with one deliberate door
 
 Registering a container starts it at `REGISTERED`. Everything after that
 happens because a portal read it, and only the state engine applies those
-changes (SPEC.md §4). There is no endpoint that sets a status, on purpose:
-one writer is what makes double-counting impossible.
+changes (SPEC.md §4). So `POST /containers` puts a container in the system;
+walking it through the entrance is what puts it in stock.
 
-So `POST /containers` puts a container in the system; walking it through
-the entrance is what puts it in stock.
+The exception is **`POST /containers/{tid}/correct`**, for the things the
+readers cannot resolve:
+
+- a container that went out but was never read at the exit — it sits on a
+  customer's shelf while the books say `IN_STOCK`
+- a container whose tag has died and stops answering altogether
+- an `ILLEGAL_TRANSITION` a person has looked into
+
+This is a second door into the same room rather than a way around it: the
+endpoint calls into the state engine instead of writing the column itself,
+so there is still exactly one place in the codebase that sets a status.
+
+A **reason is required**, and is recorded on the movement with the operator
+and `source='MANUAL'` — a hand-typed change is never mistaken for a read.
+
+```bash
+curl -X POST http://localhost:8000/containers/DEMO-1/correct \
+  -H 'content-type: application/json' \
+  -d '{"to_status":"DISPATCHED",
+       "reason":"Shipped on SO-99312; missed at the exit portal.",
+       "operator":"mlopez"}'
+```
+
+It corrects the **named container only**. A pallet's boxes are left alone,
+because a correction is a targeted decision about one container and
+cascading it silently would change things you did not ask for.
+
+Resolving an anomaly can do the correction at the same time — pass
+`correct_to_status` to `POST /anomalies/{id}/resolve`, and the disposition
+and the fix commit together:
+
+```bash
+curl -X POST http://localhost:8000/anomalies/42/resolve \
+  -H 'content-type: application/json' \
+  -d '{"resolved_by":"mlopez",
+       "note":"Shipped on SO-99312; missed at the exit.",
+       "correct_to_status":"DISPATCHED"}'
+```
 
 ### A whole cycle, from the terminal
 
@@ -900,6 +937,7 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   debouncer/service.py         reads_raw to observations
   state_engine/transitions.py  the transition table (pure, testable)
   state_engine/service.py      the ONLY writer of containers.status
+  state_engine/corrections.py  manual correction, the one other door in
   api/app.py                   FastAPI app; docs at /docs
   api/routers/                 one module per SPEC.md section 6 group
 web/                         dashboard
