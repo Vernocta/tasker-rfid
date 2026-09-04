@@ -5,10 +5,10 @@ RFID-based finished-goods stock control for Tasker S.A.
 **`SPEC.md` in this directory is the authoritative specification.** If the code
 and the spec disagree, the spec wins and the code is a bug.
 
-Current state: **build order step 6 of 10** — scaffold, containers, database
-schema, seed data, the simulator, ingest, the debouncer and the state engine.
-Reads flow all the way from the simulator to stock movements and anomalies.
-There is no API or dashboard yet, so the database is the only way to look.
+Current state: **build order step 7 of 10** — everything through the API.
+Reads flow from the simulator to stock movements and anomalies, and the API
+serves stock, dispatch, cycle counts, anomalies, consumption and health at
+**http://localhost:8000/docs**. No dashboard or cloud sync yet.
 
 ---
 
@@ -71,7 +71,9 @@ docker compose ps
 ```
 
 *Expect:* `tasker-postgres`, `tasker-mosquitto`, `tasker-ingest`,
-`tasker-debouncer` and `tasker-state-engine`, all `running`. Postgres should say `(healthy)` after a few seconds.
+`tasker-debouncer`, `tasker-state-engine` and `tasker-api`, all `running`.
+Postgres should say `(healthy)` after a few seconds. The API is then at
+http://localhost:8000/docs
 
 The first `docker compose up -d` builds the ingest image and takes a couple of
 minutes. Later ones are quick.
@@ -693,8 +695,7 @@ uv run alembic upgrade head
 uv run pytest tests/integration -v
 ```
 
-*Expect:* twelve `PASSED` lines and `12 passed`. It takes about a minute
-and a half, because the tests wait for the real 2-second quiet periods
+*Expect:* `31 passed`. It takes about two and a half minutes, because the tests wait for the real 2-second quiet periods
 rather than pretending.
 
 ```
@@ -743,6 +744,109 @@ behind in the same tables the warehouse will use.
 
 ---
 
+## The API
+
+Everything in SPEC.md §6, as a web service. Start the stack and open:
+
+### **http://localhost:8000/docs**
+
+That page lists every endpoint with a **Try it out** button — you can fill
+in a form, send a real request and see the real response, without typing
+any commands. It is the fastest way to see what the system holds.
+
+```bash
+docker compose up -d
+```
+
+*Expect:* `tasker-api` in `docker compose ps` with `0.0.0.0:8000->8000/tcp`.
+
+*If the page does not load:* check `docker compose logs api`. If port 8000
+is already used by something else on your machine, change `API_PORT` in
+`.env` and restart.
+
+The raw specification, for other software to consume, is at
+`http://localhost:8000/openapi.json`.
+
+### The endpoints
+
+| | |
+|---|---|
+| `GET /stock` | boxes of each SKU in the warehouse now |
+| `GET /stock/{sku_id}` | which containers hold that SKU |
+| `GET /containers/{tid}` | one container's full history |
+| `POST /containers` | register a container and its contents |
+| `POST /containers/{tid}/children` | build a pallet |
+| `POST /dispatch-sessions` | open the dock for a customer |
+| `POST /dispatch-sessions/{id}/close` | close it, with a summary of what left |
+| `GET /dispatch-sessions/{id}` | what went out during a session |
+| `POST /cycle-counts` | start a count |
+| `POST /cycle-counts/{id}/scan` | record a tag seen on the floor |
+| `POST /cycle-counts/{id}/close` | the variance report |
+| `GET /anomalies?resolved=false` | the queue of things needing a decision |
+| `POST /anomalies/{id}/resolve` | disposition one |
+| `GET /reports/consumption` | boxes per customer per SKU |
+| `GET /health` | reader status, last read, queue depth |
+
+### The API never moves stock
+
+Registering a container starts it at `REGISTERED`. Everything after that
+happens because a portal read it, and only the state engine applies those
+changes (SPEC.md §4). There is no endpoint that sets a status, on purpose:
+one writer is what makes double-counting impossible.
+
+So `POST /containers` puts a container in the system; walking it through
+the entrance is what puts it in stock.
+
+### A whole cycle, from the terminal
+
+```bash
+# 1. register a box with 24 cones in it
+curl -X POST http://localhost:8000/containers \
+  -H 'content-type: application/json' \
+  -d '{"tid":"DEMO-1","contents":[{"sku_id":"CONE-STD-120","quantity":24}]}'
+
+# 2. carry it in through the entrance
+uv run sim box --tid DEMO-1 --portal ENTRANCE
+sleep 10
+curl http://localhost:8000/stock            # 24 boxes of cones
+
+# 3. open the dock for a customer, load it, close the dock
+curl -X POST http://localhost:8000/dispatch-sessions \
+  -H 'content-type: application/json' \
+  -d '{"customer_id":"CUST-0001","order_ref":"SO-99312"}'
+uv run sim box --tid DEMO-1 --portal EXIT
+sleep 10
+curl -X POST http://localhost:8000/dispatch-sessions/1/close
+
+# 4. the number the business runs on
+curl 'http://localhost:8000/reports/consumption?days=90'
+```
+
+### `/health`, and what to watch
+
+```json
+{
+  "status": "ok",
+  "within_working_hours": true,
+  "readers": [
+    {"reader_id": "READER-ENTRANCE", "minutes_since_last_read": 0.6, "healthy": true}
+  ],
+  "queue_depth": {"reads_awaiting_debounce": 0, "observations_awaiting_state_engine": 0},
+  "unresolved_anomalies": 5
+}
+```
+
+`status` turns `degraded` if a reader has been silent during working hours
+for longer than `no_read_alert_hours` in `config/tasker.yaml`. A reader
+that has quietly died is the most dangerous failure in the system, because
+everything downstream keeps working perfectly on a stream of nothing.
+Outside working hours, silence is expected and not a fault.
+
+Both `queue_depth` numbers should sit near zero. If either climbs and
+stays up, the pipeline is falling behind.
+
+---
+
 ## Configuration
 
 Two files, deliberately kept separate:
@@ -762,7 +866,7 @@ add it to `.env.example` too, so the next person knows it exists.
 ```
 SPEC.md                      the specification — read this first
 PROMPTS.md                   the build plan
-docker-compose.yml           Postgres 16 + Mosquitto + the three services
+docker-compose.yml           Postgres 16 + Mosquitto + the four services
 Dockerfile                   image for the background services
 docker/mosquitto/            broker config
 config/tasker.yaml           runtime tuning (SPEC.md §8)
@@ -785,6 +889,8 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   debouncer/service.py         reads_raw to observations
   state_engine/transitions.py  the transition table (pure, testable)
   state_engine/service.py      the ONLY writer of containers.status
+  api/app.py                   FastAPI app; docs at /docs
+  api/routers/                 one module per SPEC.md section 6 group
 web/                         dashboard
 ```
 
