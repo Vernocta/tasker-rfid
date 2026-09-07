@@ -708,7 +708,7 @@ uv run alembic upgrade head
 uv run pytest tests/integration -v
 ```
 
-*Expect:* `77 passed`. It takes about five minutes, because the tests wait for the real 2-second quiet periods
+*Expect:* `88 passed`. It takes about five minutes, because the tests wait for the real 2-second quiet periods
 rather than pretending.
 
 ```
@@ -908,6 +908,11 @@ The warehouse screens. Start the stack and open:
 docker compose up -d
 ```
 
+Built for a screen on a wall: it fills the display, never scrolls as a
+whole (only a list scrolls, inside its own frame) and sizes its type
+against the viewport, so the same page works on a monitor by the dock and a
+panel over the racks.
+
 Five screens, all refreshing themselves every five seconds. The clock in
 the top right says when they last updated; if it turns red the screen has
 lost the system and is showing the last figures it received, rather than
@@ -928,6 +933,10 @@ Deliberately plain, so it can be changed without a toolchain:
 - **Jinja2 templates** — one file per screen, in
   `src/tasker_rfid/web/templates/`. The JavaScript that fills each screen
   sits at the bottom of its own template, next to the HTML it fills in.
+- **Every word in `src/tasker_rfid/web/text.py`**, Spanish and English side
+  by side. To change what a screen says, change it there. Spanish is the
+  default; `ES`/`EN` in the top right switches, and the choice sticks on
+  that screen.
 - **Tailwind served from this machine**, configured in `base.html`.
   Tasker's colours and fonts are in one block at the top of that file:
   change them there and every screen follows.
@@ -1099,6 +1108,7 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
 web/templates/                 one Jinja2 template per screen
 web/static/app.js              the dashboard's shared JavaScript
 web/static/vendor/             Tailwind and the typefaces, served locally
+web/text.py                    every word on the screens, in both languages
 web/                         dashboard
 ```
 
