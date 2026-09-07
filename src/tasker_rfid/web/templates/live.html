@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block subtitle %}
+  The last 50 reads at the portals, newest first. One row is one thing passing
+  a portal, not one radio read — a single box produces a couple of hundred
+  radio reads, which are collapsed into the one line you see here. Walk a tag
+  past a portal and it should appear within a few seconds.
+{% endblock %}
+
+{% block content %}
+<table class="w-full border-collapse">
+  <thead>
+    <tr class="bg-tasker-wash border-y-2 border-tasker-ink text-left">
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Time</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Portal</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Tag</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Identified as</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted text-right">Reads</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+{% endblock %}
+
+{% block script %}
+<script>
+/* At the exit the beams say which way it went. The entrance has no beams,
+   because a container coming into storage is unambiguous. */
+function whichWay(observation) {
+  if (observation.portal !== "EXIT") return "";
+  if (observation.direction === "OUT") return "leaving";
+  if (observation.direction === "IN") return "coming in";
+  return "direction unclear";
+}
+
+function identity(observation) {
+  if (!observation.container_id) {
+    return `<span class="text-red-700 font-semibold">Unknown tag — not registered</span>`;
+  }
+  const what = observation.contents || `${observation.kind} with nothing recorded in it`;
+  return `${text(what)}
+          <span class="text-tasker-muted"> · ${text(statusWords(observation.status))}</span>`;
+}
+
+function liveRow(observation) {
+  const way = whichWay(observation);
+  return `<tr class="border-b border-tasker-line">
+    <td class="py-6 px-4 text-2xl num whitespace-nowrap">${clockTime(observation.last_read)}</td>
+    <td class="py-6 px-4 text-2xl font-semibold whitespace-nowrap">
+      ${text(observation.portal)}
+      ${way ? `<span class="block text-xl font-normal text-tasker-muted">${text(way)}</span>` : ""}
+    </td>
+    <td class="py-6 px-4 text-xl num text-tasker-muted break-all">${text(observation.tid)}</td>
+    <td class="py-6 px-4 text-2xl">${identity(observation)}</td>
+    <td class="py-6 px-4 text-2xl text-right num text-tasker-muted">${number(observation.read_count)}</td>
+  </tr>`;
+}
+
+startPolling(async () => {
+  const observations = await apiGet("/observations", { limit: 50 });
+  fillTable(
+    "rows", observations, liveRow,
+    "No reads yet. Anything passing a portal appears here within a few seconds.",
+    5
+  );
+});
+</script>
+{% endblock %}

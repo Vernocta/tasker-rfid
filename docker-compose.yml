@@ -93,6 +93,23 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tasker}:${POSTGRES_PASSWORD:-tasker}@postgres:5432/${POSTGRES_DB:-tasker}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
+  dashboard:
+    build: .
+    container_name: tasker-dashboard
+    restart: unless-stopped
+    command: ["tasker-dashboard"]
+    depends_on:
+      - api
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    environment:
+      # The browser makes these calls, not this container, so this has to
+      # be a URL the operator's machine can reach -- not the compose
+      # service name.
+      API_BASE_URL: ${API_BASE_URL:-http://localhost:8000}
+      DASHBOARD_POLL_SECONDS: ${DASHBOARD_POLL_SECONDS:-5}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
 volumes:
   postgres_data:
   mosquitto_data:

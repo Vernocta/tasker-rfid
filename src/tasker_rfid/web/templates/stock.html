@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block subtitle %}
+  Boxes in the warehouse right now. A box counts here once it has been read at
+  the entrance portal, and stops counting the moment it is dispatched.
+{% endblock %}
+
+{% block content %}
+<table class="w-full border-collapse">
+  <thead>
+    <tr class="bg-tasker-wash border-y-2 border-tasker-ink text-left">
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">SKU</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Product</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted text-right">Boxes in stock</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+  <tfoot>
+    <tr class="border-t-4 border-tasker-ink">
+      <td class="py-6 px-4 font-head font-bold text-3xl" colspan="2">Total</td>
+      <td class="py-6 px-4 font-head font-bold text-5xl text-right num" id="total">—</td>
+    </tr>
+  </tfoot>
+</table>
+{% endblock %}
+
+{% block script %}
+<script>
+function stockRow(line) {
+  return `<tr class="border-b border-tasker-line">
+    <td class="py-6 px-4 text-2xl text-tasker-muted num">${text(line.sku_id)}</td>
+    <td class="py-6 px-4 text-3xl font-semibold">${text(line.name)}</td>
+    <td class="py-6 px-4 text-5xl font-head font-bold text-right num">${number(line.boxes)}</td>
+  </tr>`;
+}
+
+startPolling(async () => {
+  const lines = await apiGet("/stock");
+  fillTable(
+    "rows", lines, stockRow,
+    "Nothing is in stock. Boxes appear here once they have been read at the entrance portal.",
+    3
+  );
+  const total = lines.reduce((sum, line) => sum + Number(line.boxes), 0);
+  document.getElementById("total").textContent = lines.length ? number(total) : "—";
+});
+</script>
+{% endblock %}

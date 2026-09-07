@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block subtitle %}
+  Everything the system could not work out on its own. Nothing here has changed
+  any stock figure — that is the point of the queue. Resolve an item once you
+  have looked into it, and set the container's status at the same time if it
+  needs putting right.
+{% endblock %}
+
+{% block content %}
+<table class="w-full border-collapse">
+  <thead>
+    <tr class="bg-tasker-wash border-y-2 border-tasker-ink text-left">
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">When</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">What happened</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Tag</th>
+      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted"></th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+{% endblock %}
+
+{% block script %}
+<script>
+/* Which row has its resolve form open. Kept out of the redraw so a poll
+   does not wipe out something half typed. */
+let openForm = null;
+
+function anomalyRow(anomaly) {
+  const label = ANOMALY_LABELS[anomaly.kind] || anomaly.kind;
+  const explanation = ANOMALY_EXPLANATIONS[anomaly.kind] || "";
+  const { reason, pairs } = detailWords(anomaly.detail);
+
+  return `<tr class="border-b border-tasker-line align-top">
+    <td class="py-6 px-4 text-2xl num whitespace-nowrap">${dayAndTime(anomaly.occurred_at)}</td>
+    <td class="py-6 px-4">
+      <div class="text-3xl font-head font-semibold">${text(label)}</div>
+      <div class="text-xl text-tasker-muted mt-1 max-w-2xl">${text(explanation)}</div>
+      ${reason ? `<div class="text-xl text-tasker-ink mt-2 max-w-2xl">${text(reason)}</div>` : ""}
+      ${pairs.length ? `<div class="text-lg text-slate-500 mt-2">${text(pairs.join("  ·  "))}</div>` : ""}
+    </td>
+    <td class="py-6 px-4 text-xl num text-tasker-muted break-all">${text(anomaly.tid || "—")}</td>
+    <td class="py-6 px-4 text-right">
+      <button data-resolve="${anomaly.id}"
+              class="bg-tasker-blue hover:bg-tasker-blueDark text-white font-head font-semibold
+                     text-2xl px-8 py-4 whitespace-nowrap">Resolve</button>
+    </td>
+  </tr>
+  <tr data-form="${anomaly.id}" class="hidden border-b-2 border-tasker-ink bg-tasker-wash">
+    <td colspan="4" class="px-4 py-8">
+      <div class="max-w-3xl">
+        <label class="block text-xl uppercase tracking-wide text-tasker-muted font-head mb-2">Your name</label>
+        <input data-field="by" type="text"
+               class="w-full text-2xl p-4 border-2 border-tasker-ink mb-6">
+
+        <label class="block text-xl uppercase tracking-wide text-tasker-muted font-head mb-2">What you did</label>
+        <input data-field="note" type="text" placeholder="Recounted the aisle; tag replaced."
+               class="w-full text-2xl p-4 border-2 border-tasker-ink mb-6">
+
+        <label class="block text-xl uppercase tracking-wide text-tasker-muted font-head mb-2">
+          Also set this container's status
+        </label>
+        <select data-field="status" class="w-full text-2xl p-4 border-2 border-tasker-ink bg-white mb-2">
+          <option value="">Leave the status alone</option>
+          <option value="IN_STOCK">In stock — it is on the shelf</option>
+          <option value="DISPATCHED">Dispatched — it left the building</option>
+          <option value="REGISTERED">Registered — not yet booked into stock</option>
+        </select>
+        <p class="text-xl text-tasker-muted mb-8">
+          Changing the status here is recorded as a manual correction, with your
+          name and what you typed above.
+        </p>
+
+        <button data-confirm="${anomaly.id}"
+                class="bg-tasker-blue hover:bg-tasker-blueDark text-white font-head font-semibold
+                       text-2xl px-8 py-4 mr-4">Save and resolve</button>
+        <button data-cancel="${anomaly.id}"
+                class="border-2 border-tasker-ink font-head font-semibold text-2xl px-8 py-4">Cancel</button>
+        <p data-error="${anomaly.id}" class="hidden mt-6 text-2xl font-semibold text-red-700"></p>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function formRow(id) {
+  return document.querySelector(`tr[data-form="${id}"]`);
+}
+
+function wireButtons() {
+  document.querySelectorAll("[data-resolve]").forEach(button => {
+    button.onclick = () => {
+      if (openForm !== null) formRow(openForm)?.classList.add("hidden");
+      openForm = button.dataset.resolve;
+      formRow(openForm).classList.remove("hidden");
+    };
+  });
+  document.querySelectorAll("[data-cancel]").forEach(button => {
+    button.onclick = () => {
+      formRow(button.dataset.cancel).classList.add("hidden");
+      openForm = null;
+    };
+  });
+  document.querySelectorAll("[data-confirm]").forEach(button => {
+    button.onclick = async () => {
+      const id = button.dataset.confirm;
+      const row = formRow(id);
+      const value = field => row.querySelector(`[data-field="${field}"]`).value.trim();
+      const error = row.querySelector(`[data-error="${id}"]`);
+      error.classList.add("hidden");
+
+      if (!value("by")) {
+        error.textContent = "Put your name in, so the record shows who decided.";
+        error.classList.remove("hidden");
+        return;
+      }
+      try {
+        await apiPost(`/anomalies/${id}/resolve`, {
+          resolved_by: value("by"),
+          note: value("note") || null,
+          correct_to_status: value("status") || null,
+        });
+        openForm = null;
+        await refresh();
+      } catch (e) {
+        error.textContent = e.message;
+        error.classList.remove("hidden");
+      }
+    };
+  });
+}
+
+async function refresh() {
+  /* Do not redraw underneath someone who is typing. */
+  if (openForm !== null) return;
+
+  const anomalies = await apiGet("/anomalies", { resolved: false, limit: 100 });
+  fillTable(
+    "rows", anomalies, anomalyRow,
+    "Nothing to look at. Anything the system cannot work out on its own appears here.",
+    4
+  );
+  wireButtons();
+}
+
+startPolling(refresh);
+</script>
+{% endblock %}
