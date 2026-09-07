@@ -706,7 +706,7 @@ uv run alembic upgrade head
 uv run pytest tests/integration -v
 ```
 
-*Expect:* `69 passed`. It takes about three and a half minutes, because the tests wait for the real 2-second quiet periods
+*Expect:* `71 passed`. It takes about three and a half minutes, because the tests wait for the real 2-second quiet periods
 rather than pretending.
 
 ```
@@ -926,9 +926,9 @@ Deliberately plain, so it can be changed without a toolchain:
 - **Jinja2 templates** — one file per screen, in
   `src/tasker_rfid/web/templates/`. The JavaScript that fills each screen
   sits at the bottom of its own template, next to the HTML it fills in.
-- **Tailwind from a CDN**, configured in `base.html`. Tasker's colours and
-  fonts are in one block at the top of that file: change them there and
-  every screen follows.
+- **Tailwind served from this machine**, configured in `base.html`.
+  Tasker's colours and fonts are in one block at the top of that file:
+  change them there and every screen follows.
 - **Hand-written JavaScript**, shared helpers in
   `src/tasker_rfid/web/static/app.js`.
 - **No React, no npm, no build step.** What is in these files is what runs
@@ -952,11 +952,17 @@ Docker, put this machine's address there:
 API_BASE_URL=http://192.168.1.50:8000
 ```
 
-**The styling comes from a CDN**, which means the screens need internet to
-look right. They still work without it — the tables, numbers and buttons
-are all there — but unstyled. Given SPEC.md §2.4 treats the warehouse
-network as unreliable, you may want the Tailwind file served locally before
-this goes on the dock wall. Say the word and I will do that.
+**Nothing is loaded from the internet.** Tailwind and both typefaces are
+served from this machine, out of `src/tasker_rfid/web/static/vendor/`. The
+screens look and work exactly the same with the wifi unplugged, which
+matters because SPEC.md §2.4 treats the warehouse network as unreliable —
+that is why Postgres runs on the edge device in the first place. A dock
+screen that lost its layout when the wifi dropped would be the one part of
+the system that is not local-first.
+
+There is still no build step. Tailwind reads the classes in the page and
+makes the CSS in the browser, exactly as it did from the CDN; only the file
+now comes from us. `static/vendor/README.md` says how to refresh it.
 
 ---
 
@@ -1007,6 +1013,7 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   api/routers/                 one module per SPEC.md section 6 group
 web/templates/                 one Jinja2 template per screen
 web/static/app.js              the dashboard's shared JavaScript
+web/static/vendor/             Tailwind and the typefaces, served locally
 web/                         dashboard
 ```
 

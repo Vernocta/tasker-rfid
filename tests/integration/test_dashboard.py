@@ -75,6 +75,35 @@ def test_every_screen_knows_where_the_api_is(web, path):
     assert "apiBase" in body
 
 
+def test_the_screens_ask_the_internet_for_nothing(web):
+    """The dock screen must not lose its layout when the wifi drops.
+
+    SPEC.md 2.4 treats the warehouse network as unreliable, which is why
+    Postgres runs on the edge device. A screen that fetches its stylesheet
+    and typefaces from a CDN would be the one part of the system that is
+    not local-first.
+    """
+    for path in SCREENS:
+        body = web.get(path).text
+        for host in ("cdn.tailwindcss.com", "fonts.googleapis.com", "fonts.gstatic.com"):
+            assert host not in body, f"{path} still loads from {host}"
+
+
+def test_the_vendored_stylesheet_and_typefaces_are_served(web):
+    tailwind = web.get("/static/vendor/tailwind-3.4.17.js")
+    assert tailwind.status_code == 200
+    assert len(tailwind.content) > 100_000, "that is not the Tailwind build"
+
+    fonts = web.get("/static/vendor/fonts.css")
+    assert fonts.status_code == 200
+    assert "Archivo" in fonts.text and "Public Sans" in fonts.text
+    assert "https://" not in fonts.text, "a font is still being fetched remotely"
+
+    face = web.get("/static/vendor/fonts/Archivo-700-latin.woff2")
+    assert face.status_code == 200
+    assert face.content[:4] == b"wOF2", "that is not a woff2 file"
+
+
 def test_the_shared_javascript_is_served(web):
     response = web.get("/static/app.js")
     assert response.status_code == 200
