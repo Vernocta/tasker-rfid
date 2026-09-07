@@ -133,7 +133,11 @@ def _detail(conn: psycopg.Connection, session_id: int) -> dict:
         "session": session,
         "containers": fetch_all(
             conn,
-            """SELECT c.tid, c.kind, m.occurred_at, m.portal
+            """SELECT c.tid, c.kind, m.occurred_at, m.portal,
+                      (SELECT string_agg(s.name || ' x' || cc.quantity, ', ' ORDER BY s.name)
+                         FROM container_contents cc
+                         JOIN skus s ON s.sku_id = cc.sku_id
+                        WHERE cc.container_id = c.container_id) AS contents
                FROM movements m JOIN containers c USING (container_id)
                WHERE m.session_id = %s AND m.to_status = 'DISPATCHED'
                ORDER BY m.occurred_at, c.tid""",
