@@ -6,11 +6,11 @@
 <title>{{ page_title }} — Tasker</title>
 <link rel="icon" href="/static/favicon.svg">
 
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=Public+Sans:wght@400;600;700&display=swap" rel="stylesheet">
-
-<script src="https://cdn.tailwindcss.com"></script>
+<!-- Tailwind and the typefaces are served from this machine, not a CDN.
+     The warehouse network drops (SPEC.md 2.4), and the screen by the dock
+     must not lose its layout when it does. See static/vendor/README.md. -->
+<link rel="stylesheet" href="/static/vendor/fonts.css">
+<script src="/static/vendor/tailwind-3.4.17.js"></script>
 <script>
   /* Tasker's identity, in one place. Change a colour here and it changes
      everywhere. */
