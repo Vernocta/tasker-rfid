@@ -1,0 +1,17 @@
+{#
+  The ordinary shape of a screen: a heading and a sentence saying what you
+  are looking at, then one list that scrolls inside its own frame while
+  everything else stays put.
+
+  Used by every screen except dispatch, which is its own thing.
+#}
+{% extends "base.html" %}
+{% block content %}
+<main class="flex-1 min-h-0 flex flex-col px-8 py-[1.6vh]">
+  <div class="shrink-0">
+    <h1 class="font-head font-extrabold text-[clamp(28px,5vh,64px)] leading-none">{{ page_title }}</h1>
+    <p class="t-lede text-neutral-700 mt-2 max-w-[85ch] leading-snug">{% block lede %}{% endblock %}</p>
+  </div>
+  {% block screen %}{% endblock %}
+</main>
+{% endblock %}

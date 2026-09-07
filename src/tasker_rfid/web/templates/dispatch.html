@@ -1,73 +1,103 @@
+{#
+  The dock screen, from the Muelle de Carga design.
+
+  Translated from the mockup's Claude Design syntax rather than copied:
+
+    <sc-if value="{{ isOpen }}">  ->  a section shown or hidden by JavaScript,
+                                      from the real answer to
+                                      GET /dispatch-sessions/open
+    <sc-for list="{{ reads }}">   ->  rows built in script below from
+                                      GET /dispatch-sessions/{id}
+    onClick="{{ showOpen }}"      ->  a real POST that opens the dock
+
+  The mockup's CERRADO / ABIERTO buttons in the header are gone. They were
+  there to flip between artboards; here the dock is open or closed because
+  the warehouse says so, and a button that lied about that would be worse
+  than no button.
+#}
 {% extends "base.html" %}
-{% block subtitle %}
-  Choose the customer before loading starts. Everything read at the exit while
-  the dock is open is recorded against them. Nothing can leave without a
-  customer selected — an exit read with the dock closed is refused and raised
-  as an anomaly instead.
-{% endblock %}
 
 {% block content %}
+<main class="flex-1 min-h-0 flex flex-col">
 
-<!-- Shown when the dock is closed -->
-<section id="closed" class="hidden max-w-3xl">
-  <p class="text-3xl font-head font-semibold mb-8">The dock is closed.</p>
+  <!-- ================= Dock closed ================= -->
+  <section id="closed" class="hidden flex-1 min-h-0 overflow-y-auto biglist flex flex-col px-10 py-[3vh] max-w-[1100px]">
+    <div class="text-[clamp(16px,2.4vh,30px)] font-bold tracking-[0.2em] text-neutral-500">{{ t['dispatch.dock'] }}</div>
+    <h1 class="font-head font-extrabold text-[clamp(56px,13vh,140px)] leading-none mt-2">{{ t['dispatch.closed'] }}</h1>
+    <p class="text-[clamp(18px,2.8vh,36px)] mt-5 max-w-[28ch] leading-snug text-neutral-700">{{ t['dispatch.closed_lede'] }}</p>
 
-  <label class="block text-xl uppercase tracking-wide text-tasker-muted font-head mb-2"
-         for="customer">Customer</label>
-  <select id="customer"
-          class="w-full text-3xl p-5 border-2 border-tasker-ink bg-white mb-8"></select>
+    <div class="mt-[4vh] grid gap-[3vh]">
+      <label class="grid gap-2">
+        <span class="text-[clamp(14px,2vh,26px)] font-bold tracking-[0.15em] text-neutral-600">{{ t['dispatch.customer'] }}</span>
+        <select id="customer"
+                class="w-full appearance-none border-4 border-neutral-950 bg-white px-6 py-[2vh]
+                       text-[clamp(24px,4.5vh,54px)] font-head font-bold
+                       focus:outline-none focus:border-brand"></select>
+      </label>
 
-  <label class="block text-xl uppercase tracking-wide text-tasker-muted font-head mb-2"
-         for="order">Order reference <span class="normal-case">(optional)</span></label>
-  <input id="order" type="text" placeholder="SO-99312"
-         class="w-full text-3xl p-5 border-2 border-tasker-ink mb-8">
+      <label class="grid gap-2">
+        <span class="text-[clamp(14px,2vh,26px)] font-bold tracking-[0.15em] text-neutral-600">{{ t['dispatch.order_ref'] }}</span>
+        <input id="order" type="text" placeholder="SO-00000"
+               class="w-full border-4 border-neutral-950 px-6 py-[2vh]
+                      text-[clamp(24px,4.5vh,54px)] font-head font-bold tracking-wide
+                      placeholder:text-neutral-400 focus:outline-none focus:border-brand" />
+      </label>
 
-  <button id="open-dock"
-          class="w-full bg-tasker-blue hover:bg-tasker-blueDark text-white font-head font-semibold
-                 text-3xl px-8 py-6">Open the dock</button>
-  <p id="open-error" class="hidden mt-6 text-2xl font-semibold text-red-700"></p>
-</section>
-
-<!-- Shown while the dock is open -->
-<section id="open" class="hidden">
-  <div class="border-y-2 border-tasker-ink bg-tasker-wash px-6 py-6 mb-8 flex flex-wrap items-end gap-x-16 gap-y-6">
-    <div>
-      <div class="text-xl uppercase tracking-wide text-tasker-muted font-head">Loading for</div>
-      <div id="open-customer" class="text-4xl font-head font-bold">—</div>
-      <div id="open-order" class="text-2xl text-tasker-muted"></div>
+      <button id="open-dock" type="button"
+              class="w-full bg-brand text-white font-head font-extrabold
+                     text-[clamp(30px,6vh,66px)] tracking-tight py-[3.5vh] active:bg-brandDark">
+        {{ t['dispatch.open_dock'] }}
+      </button>
+      <p id="open-error" class="hidden text-[clamp(16px,2.4vh,30px)] font-bold text-red-700"></p>
     </div>
-    <div>
-      <div class="text-xl uppercase tracking-wide text-tasker-muted font-head">Boxes loaded</div>
-      <div id="open-total" class="text-6xl font-head font-bold num text-tasker-blue">0</div>
+  </section>
+
+  <!-- ================= Dock open ================= -->
+  <section id="open" class="hidden flex-1 min-h-0 flex flex-col">
+
+    <div class="bg-brand text-white px-10 py-[1.6vh] shrink-0">
+      <div class="text-[clamp(15px,1.7vh,30px)] font-bold tracking-[0.25em]">{{ t['dispatch.open_for'] }}</div>
+      <div id="open-customer" class="font-head font-extrabold text-[clamp(40px,7.5vh,104px)] leading-[0.95] mt-1 break-words">—</div>
+      <div id="open-order" class="text-[clamp(18px,2.6vh,38px)] font-bold mt-1"></div>
     </div>
-    <button id="close-dock"
-            class="ml-auto bg-tasker-blue hover:bg-tasker-blueDark text-white font-head font-semibold
-                   text-3xl px-12 py-6">Close the dock</button>
-  </div>
 
-  <table class="w-full border-collapse">
-    <thead>
-      <tr class="bg-tasker-wash border-y-2 border-tasker-ink text-left">
-        <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Time</th>
-        <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Tag</th>
-        <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Container</th>
-      </tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
+    <div class="flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
 
-  <h2 class="font-head font-bold text-3xl mt-12 mb-4">Boxes by product</h2>
-  <table class="w-full border-collapse">
-    <tbody id="totals"></tbody>
-  </table>
-</section>
+      <div class="px-10 py-[1.6vh] shrink-0 flex flex-col lg:justify-center
+                  border-b-4 lg:border-b-0 lg:border-r-4 border-neutral-950 overflow-hidden">
+        <div class="text-[clamp(15px,1.9vh,30px)] font-bold tracking-[0.2em] text-neutral-600">{{ t['dispatch.boxes_loaded'] }}</div>
+        <div id="open-total"
+             class="font-head font-extrabold text-brand num
+                    text-[clamp(64px,11vh,140px)] lg:text-[clamp(90px,19vh,240px)]
+                    leading-[0.8] tracking-tighter">0</div>
+        <div id="open-since" class="text-[clamp(15px,2.1vh,30px)] text-neutral-700 mt-2 leading-snug"></div>
+      </div>
+
+      <div class="px-10 py-[1.6vh] flex-1 flex flex-col min-w-0 min-h-0">
+        <div class="shrink-0 flex items-baseline justify-between gap-6">
+          <span class="text-[clamp(15px,1.9vh,30px)] font-bold tracking-[0.2em] text-neutral-600">{{ t['dispatch.last_reads'] }}</span>
+          <span class="text-[clamp(13px,1.7vh,22px)] text-neutral-600 whitespace-nowrap">{{ t['live.newest_first'] }}</span>
+        </div>
+        <div id="reads" class="mt-2 flex-1 min-h-[5.5rem] overflow-y-auto biglist border-y-4 border-neutral-950"></div>
+      </div>
+    </div>
+
+    <div class="px-10 pb-[2vh] pt-1 shrink-0">
+      <button id="close-dock" type="button"
+              class="w-full bg-brand text-white font-head font-extrabold
+                     text-[clamp(26px,5vh,60px)] tracking-tight py-[2.2vh] active:bg-brandDark">
+        {{ t['dispatch.close_dock'] }}
+      </button>
+    </div>
+  </section>
+</main>
 {% endblock %}
 
 {% block script %}
 <script>
 let currentSession = null;
-/* customer_id -> name, so the header can say who we are loading for
-   rather than showing an ID nobody reads from across the dock. */
+/* customer_id -> name, so the header can say who we are loading for rather
+   than showing an ID nobody reads from across the dock. */
 let customerNames = {};
 
 async function loadCustomers() {
@@ -75,38 +105,22 @@ async function loadCustomers() {
   customers.forEach(c => { customerNames[c.customer_id] = c.name; });
   const select = document.getElementById("customer");
   select.innerHTML = customers.length
-    ? customers.map(c => `<option value="${text(c.customer_id)}">${text(c.name)}</option>`).join("")
-    : `<option value="">No customers — add them to seeds/customers.csv</option>`;
+    ? `<option value="">${text(t("dispatch.choose"))}</option>`
+      + customers.map(c => `<option value="${text(c.customer_id)}">${text(c.name)}</option>`).join("")
+    : `<option value="">${text(t("dispatch.no_customers"))}</option>`;
 }
 
-function showClosed() {
-  document.getElementById("closed").classList.remove("hidden");
-  document.getElementById("open").classList.add("hidden");
+function show(which) {
+  document.getElementById("closed").classList.toggle("hidden", which !== "closed");
+  document.getElementById("open").classList.toggle("hidden", which !== "open");
 }
 
-function showOpen(session) {
-  document.getElementById("closed").classList.add("hidden");
-  document.getElementById("open").classList.remove("hidden");
-  document.getElementById("open-customer").textContent =
-    customerNames[session.customer_id] || session.customer_id;
-  const reference = session.order_ref ? "Order " + session.order_ref : "No order reference";
-  document.getElementById("open-order").textContent =
-    `${reference} · ${session.customer_id}`;
-}
-
-function containerRow(row) {
-  return `<tr class="border-b border-tasker-line">
-    <td class="py-6 px-4 text-2xl num whitespace-nowrap">${clockTime(row.occurred_at)}</td>
-    <td class="py-6 px-4 text-xl num text-tasker-muted break-all">${text(row.tid)}</td>
-    <td class="py-6 px-4 text-2xl font-semibold">${text(row.kind)}</td>
-  </tr>`;
-}
-
-function totalRow(row) {
-  return `<tr class="border-b border-tasker-line">
-    <td class="py-5 px-4 text-2xl">${text(row.sku_name)}</td>
-    <td class="py-5 px-4 text-4xl font-head font-bold text-right num">${number(row.boxes)}</td>
-  </tr>`;
+function readRow(row) {
+  return `<div class="flex items-baseline gap-6 px-2 py-[1.1vh] border-b-2 border-neutral-300">
+    <div class="font-head font-bold text-[clamp(18px,3vh,36px)] num w-[9ch] shrink-0 whitespace-nowrap">${clockTime(row.occurred_at)}</div>
+    <div class="font-head font-bold text-[clamp(18px,3vh,36px)] tracking-wide min-w-0 truncate">${text(row.tid)}</div>
+    <div class="ml-auto text-[clamp(14px,2.2vh,28px)] text-neutral-600 whitespace-nowrap truncate max-w-[45%]">${text(row.contents || row.kind)}</div>
+  </div>`;
 }
 
 async function refresh() {
@@ -114,32 +128,53 @@ async function refresh() {
   currentSession = session;
 
   if (!session) {
-    showClosed();
+    show("closed");
     return;
   }
 
-  showOpen(session);
+  show("open");
+  document.getElementById("open-customer").textContent =
+    customerNames[session.customer_id] || session.customer_id;
+  const reference = session.order_ref
+    ? `${t("dispatch.order")} ${session.order_ref}` : t("dispatch.no_order");
+  document.getElementById("open-order").textContent = `${reference} · ${session.customer_id}`;
+
   const detail = await apiGet(`/dispatch-sessions/${session.session_id}`);
-  fillTable(
-    "rows", detail.containers, containerRow,
-    "Nothing loaded yet. Containers appear here as they pass the exit.",
-    3
-  );
-  fillTable(
-    "totals", detail.totals_by_sku, totalRow,
-    "No boxes counted yet.",
-    2
-  );
+  /* The API returns them oldest first, which is the right order for a
+     record. On the dock the newest belongs at the top, under the heading
+     that says so. */
+  const newestFirst = [...detail.containers].reverse();
+  fillList("reads", newestFirst, readRow, t("dispatch.empty"));
+
   const boxes = detail.totals_by_sku.reduce((sum, row) => sum + Number(row.boxes), 0);
   document.getElementById("open-total").textContent = number(boxes);
+
+  /* How long the dock has been open, and how long since anything was read.
+     The second line is the one that tells an operator the portal is alive
+     rather than merely quiet. */
+  const opened = t("dispatch.open_since", {
+    time: shortClock(session.opened_at),
+    ago: sinceWords(session.opened_at),
+  });
+  const latest = newestFirst.length ? newestFirst[0].occurred_at : null;
+  const lastRead = latest
+    ? t("dispatch.last_read", { ago: sinceWords(latest) })
+    : t("dispatch.no_reads_yet");
+  document.getElementById("open-since").innerHTML = `${text(opened)}<br />${text(lastRead)}`;
 }
 
 document.getElementById("open-dock").addEventListener("click", async () => {
   const error = document.getElementById("open-error");
   error.classList.add("hidden");
+  const customer = document.getElementById("customer").value;
+  if (!customer) {
+    error.textContent = t("dispatch.pick_first");
+    error.classList.remove("hidden");
+    return;
+  }
   try {
     await apiPost("/dispatch-sessions", {
-      customer_id: document.getElementById("customer").value,
+      customer_id: customer,
       order_ref: document.getElementById("order").value || null,
     });
     document.getElementById("order").value = "";
@@ -152,7 +187,7 @@ document.getElementById("open-dock").addEventListener("click", async () => {
 
 document.getElementById("close-dock").addEventListener("click", async () => {
   if (!currentSession) return;
-  if (!confirm("Close the dock? Nothing more can be loaded for this customer.")) return;
+  if (!confirm(t("dispatch.confirm"))) return;
   await apiPost(`/dispatch-sessions/${currentSession.session_id}/close`);
   await refresh();
 });

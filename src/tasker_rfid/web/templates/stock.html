@@ -1,45 +1,35 @@
-{% extends "base.html" %}
-{% block subtitle %}
-  Boxes in the warehouse right now. A box counts here once it has been read at
-  the entrance portal, and stops counting the moment it is dispatched.
-{% endblock %}
+{% extends "_screen.html" %}
+{% block lede %}{{ t['stock.lede'] }}{% endblock %}
 
-{% block content %}
-<table class="w-full border-collapse">
-  <thead>
-    <tr class="bg-tasker-wash border-y-2 border-tasker-ink text-left">
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">SKU</th>
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Product</th>
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted text-right">Boxes in stock</th>
-    </tr>
-  </thead>
-  <tbody id="rows"></tbody>
-  <tfoot>
-    <tr class="border-t-4 border-tasker-ink">
-      <td class="py-6 px-4 font-head font-bold text-3xl" colspan="2">Total</td>
-      <td class="py-6 px-4 font-head font-bold text-5xl text-right num" id="total">—</td>
-    </tr>
-  </tfoot>
-</table>
+{% block screen %}
+<div class="mt-[1.4vh] flex-1 min-h-0 flex flex-col border-y-4 border-neutral-950">
+  <div class="shrink-0 flex items-baseline gap-6 px-2 py-[1vh] bg-neutral-100 border-b-4 border-neutral-950">
+    <span class="t-label font-bold text-neutral-600 uppercase w-[22ch]">{{ t['stock.col.sku'] }}</span>
+    <span class="t-label font-bold text-neutral-600 uppercase flex-1">{{ t['stock.col.product'] }}</span>
+    <span class="t-label font-bold text-neutral-600 uppercase text-right">{{ t['stock.col.boxes'] }}</span>
+  </div>
+  <div id="rows" class="flex-1 min-h-0 overflow-y-auto biglist"></div>
+</div>
+
+<div class="shrink-0 flex items-baseline gap-6 px-2 py-[1.2vh] border-b-4 border-neutral-950">
+  <span class="font-head font-extrabold text-[clamp(20px,3.4vh,44px)] flex-1">{{ t['stock.total'] }}</span>
+  <span id="total" class="font-head font-extrabold text-brand t-figure num">—</span>
+</div>
 {% endblock %}
 
 {% block script %}
 <script>
 function stockRow(line) {
-  return `<tr class="border-b border-tasker-line">
-    <td class="py-6 px-4 text-2xl text-tasker-muted num">${text(line.sku_id)}</td>
-    <td class="py-6 px-4 text-3xl font-semibold">${text(line.name)}</td>
-    <td class="py-6 px-4 text-5xl font-head font-bold text-right num">${number(line.boxes)}</td>
-  </tr>`;
+  return `<div class="flex items-baseline gap-6 px-2 py-[1.3vh] border-b-2 border-neutral-300">
+    <div class="t-row num text-neutral-600 w-[22ch] shrink-0 truncate">${text(line.sku_id)}</div>
+    <div class="t-rowbig font-head font-bold flex-1 min-w-0 truncate">${text(line.name)}</div>
+    <div class="font-head font-extrabold t-figure num text-right">${number(line.boxes)}</div>
+  </div>`;
 }
 
 startPolling(async () => {
   const lines = await apiGet("/stock");
-  fillTable(
-    "rows", lines, stockRow,
-    "Nothing is in stock. Boxes appear here once they have been read at the entrance portal.",
-    3
-  );
+  fillList("rows", lines, stockRow, t("stock.empty"));
   const total = lines.reduce((sum, line) => sum + Number(line.boxes), 0);
   document.getElementById("total").textContent = lines.length ? number(total) : "—";
 });

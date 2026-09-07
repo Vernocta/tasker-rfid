@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ language }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,61 +18,80 @@
     theme: {
       extend: {
         colors: {
-          tasker: {
-            blue: '#1D4ED8',      /* primary */
-            blueDark: '#1E3FA8',  /* hover  */
-            ink: '#0F172A',       /* body text, near black for contrast */
-            muted: '#475569',     /* labels */
-            line: '#CBD5E1',      /* rules between rows */
-            wash: '#F1F5F9',      /* table headers, page furniture */
-          },
+          brand: '#1D4ED8',      /* primary */
+          brandDark: '#163fae',  /* pressed */
         },
         fontFamily: {
-          head: ['Archivo', 'system-ui', 'sans-serif'],
-          body: ['"Public Sans"', 'system-ui', 'sans-serif'],
+          head: ['Archivo', 'Helvetica Neue', 'Helvetica', 'Arial', 'sans-serif'],
+          body: ['"Public Sans"', 'Helvetica Neue', 'Helvetica', 'Arial', 'sans-serif'],
         },
       },
     },
   };
 </script>
 <style>
-  /* Read from two or three metres away: everything is bigger than a
-     desktop app would be, and numbers line up in columns. */
-  html { font-size: 20px; }
+  /* A screen mounted on a wall, not a web page. It fills the display and
+     never scrolls as a whole: only a list scrolls, inside its own frame,
+     so the headline figures never move off the top. */
+  html, body { margin: 0; padding: 0; }
+
+  /* Type is sized against viewport height so the same screen fills a 22"
+     monitor by the dock and a 55" panel over the racks. */
+  .t-label   { font-size: clamp(13px, 1.7vh, 26px); letter-spacing: .18em; }
+  .t-row     { font-size: clamp(16px, 2.6vh, 34px); }
+  .t-rowbig  { font-size: clamp(18px, 3.0vh, 40px); }
+  .t-figure  { font-size: clamp(26px, 5.0vh, 68px); }
+  .t-huge    { font-size: clamp(56px, 11vh, 150px); }
+  .t-lede    { font-size: clamp(15px, 2.1vh, 28px); }
+
+  /* A scrollbar you can hit with a gloved hand. */
+  .biglist::-webkit-scrollbar { width: 18px; }
+  .biglist::-webkit-scrollbar-thumb { background: #1D4ED8; }
+  .biglist::-webkit-scrollbar-track { background: #e7e9ee; }
+
   .num { font-variant-numeric: tabular-nums; }
 </style>
 </head>
 
-<body class="font-body text-tasker-ink bg-white">
+<body class="font-body bg-white text-neutral-950 h-screen max-h-screen overflow-hidden w-full flex flex-col antialiased">
 
-<header class="border-b-2 border-tasker-ink">
-  <div class="px-8 py-5 flex flex-wrap items-baseline gap-x-10 gap-y-3">
-    <span class="font-head font-bold text-3xl text-tasker-blue">TASKER</span>
-    <nav class="flex flex-wrap gap-x-8 gap-y-2">
-      {% for item in nav %}
-        <a href="{{ item.path }}"
-           class="font-head font-semibold text-2xl py-2 border-b-4
-                  {% if item.path == current_path %}
-                    text-tasker-blue border-tasker-blue
-                  {% else %}
-                    text-tasker-muted border-transparent hover:text-tasker-ink
-                  {% endif %}">{{ item.label }}</a>
+<header class="flex items-stretch border-b-4 border-neutral-950 shrink-0">
+  <div class="font-head font-extrabold text-[clamp(20px,3vh,34px)] tracking-tight text-brand px-6 py-3 flex items-center">TASKER</div>
+
+  <nav class="flex overflow-x-auto">
+    {% for item in nav %}
+      <a href="{{ item.path }}"
+         class="px-5 flex items-center font-head font-bold whitespace-nowrap
+                text-[clamp(14px,2.1vh,26px)] tracking-wide border-l-4 border-neutral-950
+                {% if item.path == current_path %}bg-brand text-white{% else %}text-neutral-700 hover:bg-neutral-100{% endif %}">
+        {{ item.label }}
+      </a>
+    {% endfor %}
+  </nav>
+
+  <div class="ml-auto flex items-center gap-4 px-5 border-l-4 border-neutral-950">
+    <span id="updated" class="text-[clamp(12px,1.6vh,20px)] text-neutral-500 whitespace-nowrap">{{ t['shell.loading'] }}</span>
+    <span class="flex">
+      {% for lang in languages %}
+        <a href="/language/{{ lang.code }}?back={{ current_path }}"
+           title="{{ lang.name }}"
+           class="px-2 font-head font-bold text-[clamp(12px,1.6vh,20px)] tracking-widest
+                  {% if lang.code == language %}text-brand underline{% else %}text-neutral-500 hover:text-neutral-950{% endif %}">
+          {{ lang.code|upper }}
+        </a>
       {% endfor %}
-    </nav>
-    <span id="updated" class="text-xl text-slate-500 ml-auto">Loading…</span>
+    </span>
   </div>
 </header>
 
-<main class="px-8 py-8">
-  <h1 class="font-head font-bold text-5xl">{{ page_title }}</h1>
-  <p class="text-2xl text-tasker-muted mt-2 mb-8 max-w-4xl">{% block subtitle %}{% endblock %}</p>
-  {% block content %}{% endblock %}
-</main>
+{% block content %}{% endblock %}
 
 <script>
   window.TASKER = {
     apiBase: {{ api_base | tojson }},
     pollSeconds: {{ poll_seconds }},
+    language: {{ language | tojson }},
+    text: {{ t | tojson }},
   };
 </script>
 <script src="/static/app.js"></script>

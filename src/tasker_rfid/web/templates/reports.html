@@ -1,68 +1,57 @@
-{% extends "base.html" %}
-{% block subtitle %}
-  How many boxes of each product each customer has taken. Only loads with a
-  customer selected at the dock appear here, which is why the dock has to be
-  opened before anything is loaded.
-{% endblock %}
+{% extends "_screen.html" %}
+{% block lede %}{{ t['rep.lede'] }}{% endblock %}
 
-{% block content %}
-<div class="flex flex-wrap items-end gap-8 mb-10">
-  <div>
-    <label class="block text-xl uppercase tracking-wide text-tasker-muted font-head mb-2"
-           for="from">From</label>
-    <input id="from" type="date" class="text-2xl p-4 border-2 border-tasker-ink">
+{% block screen %}
+<div class="shrink-0 mt-[1.4vh] flex flex-wrap items-end gap-6">
+  <label class="grid gap-2">
+    <span class="t-label font-bold tracking-[0.15em] text-neutral-600">{{ t['rep.from'] }}</span>
+    <input id="from" type="date"
+           class="border-4 border-neutral-950 px-4 py-[1.2vh] text-[clamp(16px,2.6vh,32px)] font-head font-bold" />
+  </label>
+  <label class="grid gap-2">
+    <span class="t-label font-bold tracking-[0.15em] text-neutral-600">{{ t['rep.to'] }}</span>
+    <input id="to" type="date"
+           class="border-4 border-neutral-950 px-4 py-[1.2vh] text-[clamp(16px,2.6vh,32px)] font-head font-bold" />
+  </label>
+  <button id="show" type="button"
+          class="bg-brand text-white font-head font-extrabold text-[clamp(16px,2.6vh,32px)]
+                 px-8 py-[1.2vh] active:bg-brandDark">{{ t['rep.show'] }}</button>
+  <button id="last90" type="button"
+          class="border-4 border-neutral-950 font-head font-extrabold text-[clamp(16px,2.6vh,32px)]
+                 px-8 py-[1.2vh]">{{ t['rep.last90'] }}</button>
+  <span id="period" class="t-lede text-neutral-600"></span>
+</div>
+<p id="range-error" class="hidden shrink-0 mt-2 text-[clamp(16px,2.4vh,30px)] font-bold text-red-700"></p>
+
+<div class="mt-[1.4vh] flex-1 min-h-0 flex flex-col border-y-4 border-neutral-950">
+  <div class="shrink-0 flex items-baseline gap-6 px-2 py-[1vh] bg-neutral-100 border-b-4 border-neutral-950">
+    <span class="t-label font-bold text-neutral-600 uppercase w-[30ch]">{{ t['rep.col.customer'] }}</span>
+    <span class="t-label font-bold text-neutral-600 uppercase flex-1">{{ t['rep.col.product'] }}</span>
+    <span class="t-label font-bold text-neutral-600 uppercase text-right">{{ t['rep.col.boxes'] }}</span>
   </div>
-  <div>
-    <label class="block text-xl uppercase tracking-wide text-tasker-muted font-head mb-2"
-           for="to">To</label>
-    <input id="to" type="date" class="text-2xl p-4 border-2 border-tasker-ink">
-  </div>
-  <button id="show"
-          class="bg-tasker-blue hover:bg-tasker-blueDark text-white font-head font-semibold
-                 text-2xl px-10 py-4">Show these dates</button>
-  <button id="last90"
-          class="border-2 border-tasker-ink font-head font-semibold text-2xl px-10 py-4">Last 90 days</button>
+  <div id="rows" class="flex-1 min-h-0 overflow-y-auto biglist"></div>
 </div>
 
-<p id="period" class="text-2xl text-tasker-muted mb-6"></p>
-<p id="range-error" class="hidden text-2xl font-semibold text-red-700 mb-6"></p>
-
-<table class="w-full border-collapse">
-  <thead>
-    <tr class="bg-tasker-wash border-y-2 border-tasker-ink text-left">
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Customer</th>
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Product</th>
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted text-right">Boxes</th>
-    </tr>
-  </thead>
-  <tbody id="rows"></tbody>
-  <tfoot>
-    <tr class="border-t-4 border-tasker-ink">
-      <td class="py-6 px-4 font-head font-bold text-3xl" colspan="2">Total</td>
-      <td class="py-6 px-4 font-head font-bold text-5xl text-right num" id="total">—</td>
-    </tr>
-  </tfoot>
-</table>
+<div class="shrink-0 flex items-baseline gap-6 px-2 py-[1.2vh] border-b-4 border-neutral-950">
+  <span class="font-head font-extrabold text-[clamp(20px,3.4vh,44px)] flex-1">{{ t['rep.total'] }}</span>
+  <span id="total" class="font-head font-extrabold text-brand t-figure num">—</span>
+</div>
 {% endblock %}
 
 {% block script %}
 <script>
-function isoDay(date) {
-  return date.toISOString().slice(0, 10);
-}
+function isoDay(date) { return date.toISOString().slice(0, 10); }
 
-/* Default to the last 90 days, which is the window SPEC.md asks for. */
-const today = new Date();
-const ninetyDaysAgo = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000);
-document.getElementById("to").value = isoDay(today);
-document.getElementById("from").value = isoDay(ninetyDaysAgo);
+/* Default to the last 90 days, the window SPEC.md asks for. */
+document.getElementById("to").value = isoDay(new Date());
+document.getElementById("from").value = isoDay(new Date(Date.now() - 90 * 864e5));
 
 function consumptionRow(line) {
-  return `<tr class="border-b border-tasker-line">
-    <td class="py-6 px-4 text-3xl font-semibold">${text(line.customer)}</td>
-    <td class="py-6 px-4 text-2xl">${text(line.sku)}</td>
-    <td class="py-6 px-4 text-5xl font-head font-bold text-right num">${number(line.boxes)}</td>
-  </tr>`;
+  return `<div class="flex items-baseline gap-6 px-2 py-[1.3vh] border-b-2 border-neutral-300">
+    <div class="t-rowbig font-head font-bold w-[30ch] shrink-0 truncate">${text(line.customer)}</div>
+    <div class="t-row flex-1 min-w-0 truncate">${text(line.sku)}</div>
+    <div class="font-head font-extrabold t-figure num text-right">${number(line.boxes)}</div>
+  </div>`;
 }
 
 async function refresh() {
@@ -72,19 +61,14 @@ async function refresh() {
   error.classList.add("hidden");
 
   if (from && to && from > to) {
-    error.textContent = "The From date is after the To date.";
+    error.textContent = t("rep.bad_range");
     error.classList.remove("hidden");
     return;
   }
 
   const lines = await apiGet("/reports/consumption", { from_date: from, to_date: to });
-  document.getElementById("period").textContent =
-    `Dispatches from ${from || "the beginning"} to ${to || "today"}.`;
-  fillTable(
-    "rows", lines, consumptionRow,
-    "Nothing was dispatched in this period. Loads appear here once the dock has been opened for a customer and containers have passed the exit.",
-    3
-  );
+  document.getElementById("period").textContent = t("rep.period", { from: from, to: to });
+  fillList("rows", lines, consumptionRow, t("rep.empty"));
   const total = lines.reduce((sum, line) => sum + Number(line.boxes), 0);
   document.getElementById("total").textContent = lines.length ? number(total) : "—";
 }

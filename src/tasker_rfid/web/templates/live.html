@@ -1,24 +1,17 @@
-{% extends "base.html" %}
-{% block subtitle %}
-  The last 50 reads at the portals, newest first. One row is one thing passing
-  a portal, not one radio read — a single box produces a couple of hundred
-  radio reads, which are collapsed into the one line you see here. Walk a tag
-  past a portal and it should appear within a few seconds.
-{% endblock %}
+{% extends "_screen.html" %}
+{% block lede %}{{ t['live.lede'] }}{% endblock %}
 
-{% block content %}
-<table class="w-full border-collapse">
-  <thead>
-    <tr class="bg-tasker-wash border-y-2 border-tasker-ink text-left">
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Time</th>
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Portal</th>
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Tag</th>
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted">Identified as</th>
-      <th class="py-4 px-4 font-head text-xl uppercase tracking-wide text-tasker-muted text-right">Reads</th>
-    </tr>
-  </thead>
-  <tbody id="rows"></tbody>
-</table>
+{% block screen %}
+<div class="mt-[1.4vh] flex-1 min-h-0 flex flex-col border-y-4 border-neutral-950">
+  <div class="shrink-0 flex items-baseline gap-5 px-2 py-[1vh] bg-neutral-100 border-b-4 border-neutral-950">
+    <span class="t-label font-bold text-neutral-600 uppercase w-[9ch]">{{ t['live.col.time'] }}</span>
+    <span class="t-label font-bold text-neutral-600 uppercase w-[12ch]">{{ t['live.col.portal'] }}</span>
+    <span class="t-label font-bold text-neutral-600 uppercase w-[24ch]">{{ t['live.col.tag'] }}</span>
+    <span class="t-label font-bold text-neutral-600 uppercase flex-1">{{ t['live.col.identity'] }}</span>
+    <span class="t-label font-bold text-neutral-600 uppercase w-[8ch] text-right">{{ t['live.col.reads'] }}</span>
+  </div>
+  <div id="rows" class="flex-1 min-h-0 overflow-y-auto biglist"></div>
+</div>
 {% endblock %}
 
 {% block script %}
@@ -27,41 +20,37 @@
    because a container coming into storage is unambiguous. */
 function whichWay(observation) {
   if (observation.portal !== "EXIT") return "";
-  if (observation.direction === "OUT") return "leaving";
-  if (observation.direction === "IN") return "coming in";
-  return "direction unclear";
+  if (observation.direction === "OUT") return t("live.leaving");
+  if (observation.direction === "IN") return t("live.entering");
+  return t("live.no_direction");
 }
 
 function identity(observation) {
   if (!observation.container_id) {
-    return `<span class="text-red-700 font-semibold">Unknown tag — not registered</span>`;
+    return `<span class="text-red-700 font-bold">${text(t("live.unknown_tag"))}</span>`;
   }
-  const what = observation.contents || `${observation.kind} with nothing recorded in it`;
-  return `${text(what)}
-          <span class="text-tasker-muted"> · ${text(statusWords(observation.status))}</span>`;
+  const what = observation.contents
+    || `${observation.kind} ${t("live.nothing_recorded")}`;
+  return `${text(what)}<span class="text-neutral-500"> · ${text(statusWords(observation.status))}</span>`;
 }
 
 function liveRow(observation) {
   const way = whichWay(observation);
-  return `<tr class="border-b border-tasker-line">
-    <td class="py-6 px-4 text-2xl num whitespace-nowrap">${clockTime(observation.last_read)}</td>
-    <td class="py-6 px-4 text-2xl font-semibold whitespace-nowrap">
-      ${text(observation.portal)}
-      ${way ? `<span class="block text-xl font-normal text-tasker-muted">${text(way)}</span>` : ""}
-    </td>
-    <td class="py-6 px-4 text-xl num text-tasker-muted break-all">${text(observation.tid)}</td>
-    <td class="py-6 px-4 text-2xl">${identity(observation)}</td>
-    <td class="py-6 px-4 text-2xl text-right num text-tasker-muted">${number(observation.read_count)}</td>
-  </tr>`;
+  return `<div class="flex items-baseline gap-5 px-2 py-[1.1vh] border-b-2 border-neutral-300">
+    <div class="t-row num w-[9ch] shrink-0">${clockTime(observation.last_read)}</div>
+    <div class="w-[12ch] shrink-0">
+      <div class="t-row font-head font-bold">${text(observation.portal)}</div>
+      ${way ? `<div class="t-label text-neutral-600 tracking-normal">${text(way)}</div>` : ""}
+    </div>
+    <div class="t-label num text-neutral-500 w-[24ch] shrink-0 truncate tracking-normal">${text(observation.tid)}</div>
+    <div class="t-row flex-1 min-w-0 truncate">${identity(observation)}</div>
+    <div class="t-row num text-neutral-500 w-[8ch] text-right">${number(observation.read_count)}</div>
+  </div>`;
 }
 
 startPolling(async () => {
   const observations = await apiGet("/observations", { limit: 50 });
-  fillTable(
-    "rows", observations, liveRow,
-    "No reads yet. Anything passing a portal appears here within a few seconds.",
-    5
-  );
+  fillList("rows", observations, liveRow, t("live.empty"));
 });
 </script>
 {% endblock %}
