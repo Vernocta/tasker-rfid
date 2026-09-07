@@ -5,10 +5,11 @@ RFID-based finished-goods stock control for Tasker S.A.
 **`SPEC.md` in this directory is the authoritative specification.** If the code
 and the spec disagree, the spec wins and the code is a bug.
 
-Current state: **build order step 8 of 10** — everything through the dashboard.
-Reads flow from the simulator to stock movements and anomalies; the API serves
-them at **http://localhost:8000/docs** and the warehouse screens are at
-**http://localhost:8080**. No cloud sync yet.
+Current state: **build order step 9 of 10** — everything but the hardware.
+Reads flow from the simulator to stock movements and anomalies, the API serves
+them at **http://localhost:8000/docs**, the warehouse screens are at
+**http://localhost:8080**, and a sync worker copies the database to a cloud
+replica. Step 10 is swapping the simulator for the real reader.
 
 ---
 
@@ -152,6 +153,7 @@ docker compose down       # stop them (data is kept)
 docker compose logs -f    # watch what they are doing
 
 uv run alembic upgrade head       # apply any new migrations
+DATABASE_URL="$CLOUD_DATABASE_URL" uv run alembic upgrade head   # and to the cloud
 uv run alembic current            # which migration is applied
 uv run alembic downgrade base     # drop all tables (destroys data)
 
@@ -706,7 +708,7 @@ uv run alembic upgrade head
 uv run pytest tests/integration -v
 ```
 
-*Expect:* `71 passed`. It takes about three and a half minutes, because the tests wait for the real 2-second quiet periods
+*Expect:* `77 passed`. It takes about five minutes, because the tests wait for the real 2-second quiet periods
 rather than pretending.
 
 ```
@@ -966,6 +968,86 @@ now comes from us. `static/vendor/README.md` says how to refresh it.
 
 ---
 
+## Cloud sync
+
+Copies the warehouse database to a cloud replica, continuously and in the
+background (SPEC.md §2.4). The warehouse never waits for it and never
+depends on it.
+
+Until there is a real cloud database, `docker compose` runs a **second
+Postgres that stands in for it**, on port 5433. Both need the schema:
+
+```bash
+docker compose up -d
+uv run alembic upgrade head
+DATABASE_URL="$CLOUD_DATABASE_URL" uv run alembic upgrade head
+```
+
+*Expect*, in `docker compose logs -f sync`:
+
+```
+sync running; local is read-only to this service, cursor lives in the cloud
+rows sent=269625 cycles=195
+```
+
+*If the cloud has not been migrated*, the worker says exactly what to run
+and keeps retrying. Nothing else is affected.
+
+To see what has gone across:
+
+```bash
+docker compose exec cloud psql -U tasker -d tasker_cloud \
+  -c "select table_name, rows_synced, synced_at from sync_cursor order by table_name;"
+```
+
+### Why it cannot lose anything
+
+Three properties, each made structural rather than promised:
+
+**Nothing depends on the cloud.** The worker only ever *reads* the local
+database — its connection is opened read-only, and it has no write path to
+the warehouse at all. Not even for its own bookkeeping, which is why the
+cursor lives in the cloud. Unplug the cloud, or this whole service, and the
+warehouse carries on exactly as before.
+
+**It cannot lose rows.** The cursor is written to the cloud **in the same
+transaction as the rows it covers**. There is no moment where the cursor
+has moved past rows that did not land: either the transaction committed and
+both are there, or it did not and the next pass reads from the same place.
+Losing the link mid-sync costs a retry, never a row.
+
+**Running it twice is harmless.** Every write is an upsert keyed on the
+primary key, so re-sending a batch overwrites it with identical values.
+
+### How it finds what is new
+
+Two kinds of table, because one question does not fit both:
+
+| | How it asks "what is new?" |
+|---|---|
+| `reads_raw`, `gate_events`, `movements` | by `id` — written once, never touched, so the BIGSERIAL is a perfect high-water mark |
+| everything else | by `updated_at`, kept current by a trigger |
+
+The second is not optional: a container's status changes long after its id
+was assigned, so an id watermark would never look at that row again and the
+cloud's stock figures would freeze at whatever they were when the row was
+created.
+
+Tables go across parents-first, so a row never arrives before the row it
+points at. `containers` is written in two passes within its transaction,
+because a pallet and a box sitting on it can be in the same batch with the
+box first.
+
+Nothing in this system deletes rows, so nothing here propagates deletions.
+
+### Pointing it at a real cloud database
+
+Replace `CLOUD_DATABASE_URL_INTERNAL` in `.env` with the real connection
+string, run the migrations against it once, and delete the `cloud` service
+from `docker-compose.yml`. Nothing else changes.
+
+---
+
 ## Configuration
 
 Two files, deliberately kept separate:
@@ -985,7 +1067,8 @@ add it to `.env.example` too, so the next person knows it exists.
 ```
 SPEC.md                      the specification — read this first
 PROMPTS.md                   the build plan
-docker-compose.yml           Postgres 16 + Mosquitto + the four services
+docker-compose.yml           Postgres 16 + Mosquitto + the services + a
+                             second Postgres standing in for the cloud
 Dockerfile                   image for the background services
 docker/mosquitto/            broker config
 config/tasker.yaml           runtime tuning (SPEC.md §8)
@@ -1009,6 +1092,8 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   state_engine/transitions.py  the transition table (pure, testable)
   state_engine/service.py      the ONLY writer of containers.status
   state_engine/corrections.py  manual correction, the one other door in
+  sync/tables.py               what is copied to the cloud, and in what order
+  sync/service.py              local to cloud; never writes to local
   api/app.py                   FastAPI app; docs at /docs
   api/routers/                 one module per SPEC.md section 6 group
 web/templates/                 one Jinja2 template per screen
