@@ -5,10 +5,10 @@ RFID-based finished-goods stock control for Tasker S.A.
 **`SPEC.md` in this directory is the authoritative specification.** If the code
 and the spec disagree, the spec wins and the code is a bug.
 
-Current state: **build order step 7 of 10** — everything through the API.
-Reads flow from the simulator to stock movements and anomalies, and the API
-serves stock, dispatch, cycle counts, anomalies, consumption and health at
-**http://localhost:8000/docs**. No dashboard or cloud sync yet.
+Current state: **build order step 8 of 10** — everything through the dashboard.
+Reads flow from the simulator to stock movements and anomalies; the API serves
+them at **http://localhost:8000/docs** and the warehouse screens are at
+**http://localhost:8080**. No cloud sync yet.
 
 ---
 
@@ -71,9 +71,10 @@ docker compose ps
 ```
 
 *Expect:* `tasker-postgres`, `tasker-mosquitto`, `tasker-ingest`,
-`tasker-debouncer`, `tasker-state-engine` and `tasker-api`, all `running`.
-Postgres should say `(healthy)` after a few seconds. The API is then at
-http://localhost:8000/docs
+`tasker-debouncer`, `tasker-state-engine`, `tasker-api` and
+`tasker-dashboard`, all `running`. Postgres should say `(healthy)` after a
+few seconds. The screens are then at http://localhost:8080 and the API's own
+documentation at http://localhost:8000/docs
 
 The first `docker compose up -d` builds the ingest image and takes a couple of
 minutes. Later ones are quick.
@@ -692,7 +693,7 @@ simulator's read model.
 uv run pytest tests/unit
 ```
 
-*Expect:* `77 passed in 0.45s`
+*Expect:* `77 passed in 0.40s`
 
 **Failure-mode tests — the whole system, end to end.** These publish real
 MQTT messages with the simulator and wait for ingest, the debouncer and
@@ -705,7 +706,7 @@ uv run alembic upgrade head
 uv run pytest tests/integration -v
 ```
 
-*Expect:* `46 passed`. It takes about three minutes, because the tests wait for the real 2-second quiet periods
+*Expect:* `69 passed`. It takes about three and a half minutes, because the tests wait for the real 2-second quiet periods
 rather than pretending.
 
 ```
@@ -895,6 +896,70 @@ stays up, the pipeline is falling behind.
 
 ---
 
+## The dashboard
+
+The warehouse screens. Start the stack and open:
+
+### **http://localhost:8080**
+
+```bash
+docker compose up -d
+```
+
+Five screens, all refreshing themselves every five seconds. The clock in
+the top right says when they last updated; if it turns red the screen has
+lost the system and is showing the last figures it received, rather than
+pretending the warehouse is empty.
+
+| Screen | What it is for |
+|---|---|
+| **Stock** (`/`) | Boxes of each product in the warehouse. The one that stays on display. |
+| **Live reads** (`/live`) | The last 50 things read at the portals. Use it to check a portal is working. |
+| **Dispatch** (`/dispatch`) | Pick the customer, watch the load build, close the dock. |
+| **Anomalies** (`/anomalies`) | What needs a person, and the button to settle it. |
+| **Reports** (`/reports`) | Boxes per customer per product, over any dates. |
+
+### How it is built
+
+Deliberately plain, so it can be changed without a toolchain:
+
+- **Jinja2 templates** — one file per screen, in
+  `src/tasker_rfid/web/templates/`. The JavaScript that fills each screen
+  sits at the bottom of its own template, next to the HTML it fills in.
+- **Tailwind from a CDN**, configured in `base.html`. Tasker's colours and
+  fonts are in one block at the top of that file: change them there and
+  every screen follows.
+- **Hand-written JavaScript**, shared helpers in
+  `src/tasker_rfid/web/static/app.js`.
+- **No React, no npm, no build step.** What is in these files is what runs
+  in the browser.
+
+To change a screen, edit its template and reload the page. Nothing to
+compile.
+
+### Two things worth knowing
+
+**It runs on its own port.** The API owns `/anomalies` for its JSON and the
+dashboard needs `/anomalies` for a page, so they cannot share one. The API
+stays on 8000, the dashboard is on 8080.
+
+**The browser talks to the API directly**, so `API_BASE_URL` in `.env` has
+to be a URL the *operator's machine* can reach — not the compose service
+name. If the screen by the dock is a different machine from the one running
+Docker, put this machine's address there:
+
+```
+API_BASE_URL=http://192.168.1.50:8000
+```
+
+**The styling comes from a CDN**, which means the screens need internet to
+look right. They still work without it — the tables, numbers and buttons
+are all there — but unstyled. Given SPEC.md §2.4 treats the warehouse
+network as unreliable, you may want the Tailwind file served locally before
+this goes on the dock wall. Say the word and I will do that.
+
+---
+
 ## Configuration
 
 Two files, deliberately kept separate:
@@ -940,6 +1005,8 @@ src/tasker_rfid/services/    ingest, debouncer, state_engine, api, sync, simulat
   state_engine/corrections.py  manual correction, the one other door in
   api/app.py                   FastAPI app; docs at /docs
   api/routers/                 one module per SPEC.md section 6 group
+web/templates/                 one Jinja2 template per screen
+web/static/app.js              the dashboard's shared JavaScript
 web/                         dashboard
 ```
 
