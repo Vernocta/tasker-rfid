@@ -348,12 +348,17 @@ Every failure mode in Section 7 must have a corresponding simulator command and 
 ```
 GET  /stock                          stock on hand by SKU
 GET  /stock/{sku_id}                 containers holding this SKU
+GET  /skus                           product catalogue
+GET  /customers                      customer list
 GET  /containers/{tid}               full history
 POST /containers                     register a container + contents
 POST /containers/{tid}/children      attach child containers (pallet build)
 POST /containers/{tid}/correct       set status by hand {to_status, reason, operator}
 
+GET  /observations?limit=50          recent portal reads, newest read first
+
 POST /dispatch-sessions              open (customer, order_ref)
+GET  /dispatch-sessions/open         the session currently open, or null
 POST /dispatch-sessions/{id}/close   close
 GET  /dispatch-sessions/{id}         contents read during session
 
@@ -364,7 +369,7 @@ POST /cycle-counts/{id}/close        variance report
 GET  /anomalies?resolved=false       queue
 POST /anomalies/{id}/resolve         disposition; may trigger a correction
 
-GET  /reports/consumption            per customer per SKU per period
+GET  /reports/consumption            per customer per SKU; ?days= or ?from_date=&to_date=
 GET  /health                         reader status, last read, queue depth
 ```
 
@@ -383,6 +388,17 @@ operator did not ask for. Correct each container that genuinely needs it.
 `POST /anomalies/{id}/resolve` accepts an optional `correct_to_status`, which
 applies the correction in the same transaction as the disposition, so a decision
 and the change it implies cannot come apart.
+
+**The five read-only endpoints added for the dashboard.** `GET /skus` and
+`GET /customers` let the dock offer a customer to choose rather than making
+someone type an ID from memory. `GET /observations` is the live read feed —
+one row per physical event with the tag resolved to whatever it turned out to
+be, ordered by **when the tag was read**, not by observation id (ids follow the
+order the debouncer closed each group, so a tag that goes quiet sooner gets a
+lower id and would sort above a later read). `GET /dispatch-sessions/open`
+answers "is the dock open?" in one call. And `/reports/consumption` takes an
+explicit `from_date`/`to_date` range as well as the rolling `days` window,
+because a report is usually asked for over a month or a quarter.
 
 ---
 
