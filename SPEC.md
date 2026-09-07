@@ -62,6 +62,10 @@ Repeated reads of a container already in a state are idempotent no-ops. This str
 
 Postgres runs on the edge device in the warehouse. Cloud sync is asynchronous. Warehouse networks are unreliable and a lost dispatch read is an unrecoverable inventory error.
 
+The sync worker only ever **reads** the local database — it has no write path to it, not even for its own bookkeeping, which is why `sync_cursor` lives in the cloud. Unplug the cloud and the warehouse carries on unchanged.
+
+The cursor is written to the cloud in the same transaction as the rows it covers, so it can never move past rows that did not land: either both committed or neither did. Losing the link mid-sync costs a retry, never a row. Every write is an upsert keyed on the primary key, so re-sending a batch is harmless.
+
 ### 2.5 Every dispatch is attributed
 
 A dispatch event without a destination is an anomaly, not a valid state. The operator selects the customer/order at the dock before loading; everything read during that window is attributed to it.
@@ -79,13 +83,15 @@ CREATE TABLE skus (
   family        TEXT NOT NULL,   -- 'cones','cups','powder','bag_in_box','tetra','sauce','accessories'
   units_per_box INTEGER NOT NULL,
   tag_class     TEXT,            -- 'paper','paper_long','on_metal' (set after RF test)
-  active        BOOLEAN NOT NULL DEFAULT TRUE
+  active        BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE customers (
   customer_id   TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
-  active        BOOLEAN NOT NULL DEFAULT TRUE
+  active        BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ============ Physical objects ============
@@ -100,7 +106,8 @@ CREATE TABLE containers (
   reusable      BOOLEAN NOT NULL DEFAULT FALSE,  -- pallets/totes: TRUE
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at  TIMESTAMPTZ,
-  last_portal   TEXT
+  last_portal   TEXT,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX ON containers (status);
 CREATE INDEX ON containers (parent_id);
@@ -116,10 +123,19 @@ CREATE TABLE container_contents (
   quantity      INTEGER NOT NULL,       -- number of boxes
   lot           TEXT,
   produced_at   DATE,
-  expiry        DATE
+  expiry        DATE,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX ON container_contents (container_id);
 CREATE INDEX ON container_contents (sku_id);
+
+-- `updated_at` above, and on every table below whose rows can change after
+-- they are written, is maintained by a trigger. It exists so the sync worker
+-- can ask "what changed since last time": a container's status changes long
+-- after its id was assigned, so an id high-water mark would never see that row
+-- again. The append-only tables -- reads_raw, gate_events, movements -- do not
+-- have one; their BIGSERIAL id already says everything, and a per-row trigger
+-- on reads_raw at 900 reads/sec would cost something for nothing.
 
 -- ============ Read pipeline ============
 
@@ -137,6 +153,21 @@ CREATE TABLE reads_raw (
 CREATE INDEX ON reads_raw (tid, read_at);
 CREATE INDEX ON reads_raw (read_at);
 
+-- Beam-break events from the IR gate at a gated portal (the exit).
+-- Append-only, like reads_raw. Two beams a few centimetres apart: INNER
+-- faces the warehouse, OUTER faces the street, and break order gives
+-- direction (section 4, layer 3).
+CREATE TABLE gate_events (
+  id          BIGSERIAL PRIMARY KEY,
+  gate_id     TEXT NOT NULL,          -- e.g. 'GATE-EXIT'
+  beam        TEXT NOT NULL,          -- 'INNER','OUTER'
+  state       TEXT NOT NULL,          -- 'BROKEN','CLEAR'
+  occurred_at TIMESTAMPTZ NOT NULL,
+  ingested_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ON gate_events (gate_id, occurred_at);
+CREATE INDEX ON gate_events (occurred_at);
+
 -- Debounced and filtered
 CREATE TABLE observations (
   id           BIGSERIAL PRIMARY KEY,
@@ -147,7 +178,8 @@ CREATE TABLE observations (
   last_read    TIMESTAMPTZ NOT NULL,
   read_count   INTEGER NOT NULL,
   peak_rssi    SMALLINT,
-  processed    BOOLEAN NOT NULL DEFAULT FALSE
+  processed    BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX ON observations (processed) WHERE processed = FALSE;
 
@@ -159,7 +191,8 @@ CREATE TABLE dispatch_sessions (
   order_ref    TEXT,
   opened_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   closed_at    TIMESTAMPTZ,
-  operator     TEXT
+  operator     TEXT,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE movements (
@@ -189,7 +222,8 @@ CREATE TABLE anomalies (
   occurred_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   resolved     BOOLEAN NOT NULL DEFAULT FALSE,
   resolved_by  TEXT,
-  resolved_at  TIMESTAMPTZ
+  resolved_at  TIMESTAMPTZ,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX ON anomalies (resolved) WHERE resolved = FALSE;
 
@@ -208,14 +242,42 @@ CREATE TABLE cycle_counts (
   started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at  TIMESTAMPTZ,
   operator     TEXT,
-  notes        TEXT
+  notes        TEXT,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE cycle_count_items (
   cycle_id     BIGINT NOT NULL REFERENCES cycle_counts(id) ON DELETE CASCADE,
   tid          TEXT NOT NULL,
   found        BOOLEAN NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (cycle_id, tid)
+);
+
+-- ============ Service bookkeeping ============
+--
+-- Not business data. Each of these belongs to one service and is
+-- meaningless to the others.
+
+-- Where the debouncer has read up to in reads_raw. reads_raw is append-only
+-- and never updated, so there is nowhere in it to mark a row as consumed.
+-- One row. Deleting it only makes the debouncer start again from the top.
+CREATE TABLE debouncer_cursor (
+  name          TEXT PRIMARY KEY,
+  last_read_id  BIGINT NOT NULL DEFAULT 0,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- How far the cloud replica has been brought up to date. This lives in the
+-- CLOUD copy of the schema, not the warehouse one, and is written in the
+-- same transaction as the rows it covers so the two can never disagree.
+-- Locally it simply stays empty.
+CREATE TABLE sync_cursor (
+  table_name      TEXT PRIMARY KEY,
+  last_id         BIGINT NOT NULL DEFAULT 0,
+  last_updated_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01T00:00:00Z',
+  rows_synced     BIGINT NOT NULL DEFAULT 0,
+  synced_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
