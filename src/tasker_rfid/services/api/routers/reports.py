@@ -7,7 +7,9 @@ planning and sales attention.
 """
 
 import psycopg
-from fastapi import APIRouter, Depends, Query
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..db import connection, fetch_all
 from ..schemas import ConsumptionLine
@@ -30,7 +32,8 @@ CONSUMPTION_SQL = """
     JOIN container_contents cc ON cc.container_id = m.container_id
     JOIN skus s ON s.sku_id = cc.sku_id
     WHERE m.to_status = 'DISPATCHED'
-      AND m.occurred_at > now() - make_interval(days => %s)
+      AND m.occurred_at >= %s
+      AND m.occurred_at < %s
     GROUP BY cu.name, s.name
     ORDER BY cu.name, boxes DESC
 """
@@ -54,6 +57,28 @@ def consumption(
     days: int = Query(
         default=90, ge=1, le=3650, description="How many days back to look."
     ),
+    from_date: date | None = Query(
+        default=None,
+        description="Start of the period, inclusive. Overrides `days` when given.",
+    ),
+    to_date: date | None = Query(
+        default=None,
+        description="End of the period, inclusive. Defaults to today.",
+    ),
     conn: psycopg.Connection = Depends(connection),
 ) -> list[dict]:
-    return fetch_all(conn, CONSUMPTION_SQL, (days,))
+    if from_date is None and to_date is None:
+        # The rolling window, which is what SPEC.md section 3.1 asks for.
+        return fetch_all(
+            conn,
+            CONSUMPTION_SQL.replace("m.occurred_at >= %s", "m.occurred_at >= now() - make_interval(days => %s)")
+            .replace("AND m.occurred_at < %s", "AND m.occurred_at < now() + INTERVAL \'1 day\'"),
+            (days,),
+        )
+
+    start = from_date or date.min
+    end = to_date or date.today()
+    if start > end:
+        raise HTTPException(422, "The start of the period is after its end.")
+    # `to_date` is inclusive, so run the comparison to the start of the next day.
+    return fetch_all(conn, CONSUMPTION_SQL, (start, end.fromordinal(end.toordinal() + 1)))

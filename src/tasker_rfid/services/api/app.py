@@ -19,13 +19,17 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from fastapi.middleware.cors import CORSMiddleware
+
 from . import db
 from .routers import (
     anomalies,
+    catalogue,
     containers,
     cycle_counts,
     dispatch_sessions,
     health,
+    observations,
     reports,
     stock,
 )
@@ -107,6 +111,17 @@ app = FastAPI(
     contact={"name": "SPEC.md", "url": "https://github.com/Vernocta/tasker-rfid"},
 )
 
+# The dashboard is served from its own port, so its JavaScript calls this
+# API cross-origin. On a warehouse LAN with no authentication anywhere,
+# the origin list is not the thing keeping anyone out; set
+# CORS_ALLOW_ORIGINS if this is ever reachable beyond the warehouse.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",")],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 for router in (
     stock.router,
     containers.router,
@@ -115,6 +130,8 @@ for router in (
     anomalies.router,
     reports.router,
     health.router,
+    catalogue.router,
+    observations.router,
 ):
     app.include_router(router)
 

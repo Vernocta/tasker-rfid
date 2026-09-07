@@ -70,6 +70,24 @@ def open_session(
     return created
 
 
+@router.get(
+    "/open",
+    response_model=DispatchSession | None,
+    summary="The session currently open at the dock, if any",
+    description=(
+        "Returns the open session, or null when the dock is closed. Only "
+        "one can be open at a time, so this is unambiguous."
+    ),
+)
+def current_session(conn: psycopg.Connection = Depends(connection)) -> dict | None:
+    return fetch_one(
+        conn,
+        """SELECT session_id, customer_id, order_ref, operator, opened_at, closed_at
+           FROM dispatch_sessions WHERE closed_at IS NULL
+           ORDER BY opened_at DESC LIMIT 1""",
+    )
+
+
 @router.post(
     "/{session_id}/close",
     response_model=DispatchSessionDetail,
