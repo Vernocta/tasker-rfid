@@ -24,6 +24,7 @@ tasker-debouncer = "tasker_rfid.services.debouncer.service:main"
 tasker-state-engine = "tasker_rfid.services.state_engine.service:main"
 tasker-api = "tasker_rfid.services.api.app:main"
 tasker-dashboard = "tasker_rfid.web.app:main"
+tasker-sync = "tasker_rfid.services.sync.service:main"
 
 [dependency-groups]
 dev = [

@@ -110,7 +110,42 @@ services:
       DASHBOARD_POLL_SECONDS: ${DASHBOARD_POLL_SECONDS:-5}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
+  # Stands in for the cloud replica until the real one exists. Same schema,
+  # different machine as far as everything else is concerned. Swap
+  # CLOUD_DATABASE_URL for the real connection string and delete this.
+  cloud:
+    image: postgres:16
+    container_name: tasker-cloud
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CLOUD_POSTGRES_USER:-tasker}
+      POSTGRES_PASSWORD: ${CLOUD_POSTGRES_PASSWORD:-tasker}
+      POSTGRES_DB: ${CLOUD_POSTGRES_DB:-tasker_cloud}
+    ports:
+      - "${CLOUD_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - cloud_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CLOUD_POSTGRES_USER:-tasker} -d ${CLOUD_POSTGRES_DB:-tasker_cloud}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  sync:
+    build: .
+    container_name: tasker-sync
+    restart: unless-stopped
+    command: ["tasker-sync"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tasker}:${POSTGRES_PASSWORD:-tasker}@postgres:5432/${POSTGRES_DB:-tasker}
+      CLOUD_DATABASE_URL: ${CLOUD_DATABASE_URL_INTERNAL:-postgresql+psycopg://tasker:tasker@cloud:5432/tasker_cloud}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
 volumes:
+  cloud_data:
   postgres_data:
   mosquitto_data:
   mosquitto_log:
