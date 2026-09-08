@@ -15,6 +15,12 @@
 3. **Fresh-machine smoke test** — clone, up, migrate, seed, simulate, confirm on the dashboard. Catches anything that only works because the dev laptop has something installed.
 4. **Real seed data** — replace placeholder SKUs and customers.
 
+## SMALL, ANY TIME
+
+- Fix the sync worker's error message so a local database fault is not reported as a cloud outage (feedback #13)
+- Decide, per setting, whether the four unread `tasker.yaml` keys get wired up or labelled not-yet-used (feedback #14)
+- Record the 902–928 MHz band in SPEC §11 (feedback #15)
+
 ## LATER
 
 5. Step 10 — real reader integration

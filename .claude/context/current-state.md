@@ -1,6 +1,6 @@
 # Current state
 
-_Last updated: after step 9 + dashboard restyle._
+_Last updated: after the context bundle was split and audited against the code._
 
 ## Working
 
@@ -10,16 +10,29 @@ _Last updated: after step 9 + dashboard restyle._
 - All nine SPEC §7 failure modes have tests
 - Five dashboard screens, bilingual, styled, zero external requests verified
 - Cloud sync verified under two mid-flight outages: 79,037 = 79,037 rows, zero duplicates, matching id checksum
+- Context bundle split into `.claude/context/` and audited against the code (see feedback #13–#16)
 
 ## Verified numbers worth keeping
 
 | Check | Result |
 |---|---|
-| One box past a portal | 191 published → 191 stored |
+| One box past a portal | published == stored, every time (the count is seed-dependent: 180–193) |
 | 50-box pallet | 1,500 raw reads → 47 observations (1 pallet + 46 readable, 4 missed at 8%) |
 | Tag parked 10 min | 2,000+ raw reads → **1** movement |
 | Sustained throughput | 9,000 over 10s, zero loss |
 | SIGKILL mid-batch | 300 of 300 redelivered |
+
+## Config that is written but not read
+
+`config/tasker.yaml` documents four settings nothing consumes. Changing them
+today does nothing:
+
+| Setting | Reality |
+|---|---|
+| `mode: hybrid` | Never read. The container model does support all three, but switching is a code change, not a config change. |
+| `portals.*.direction_mode` | Never read. A portal is gated if it has a `gate_id`. |
+| `portals.exit.require_session` | Never read. A session is **always** required for a dispatch. |
+| `rf.tx_power_dbm`, `rf.session` | Never read. Reader settings, for hardware that does not exist yet. |
 
 ## Not started
 
