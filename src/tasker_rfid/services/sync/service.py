@@ -40,7 +40,22 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from ...db_errors import CLOUD_MIGRATIONS_COMMAND, explain
 from .tables import SYNCED_TABLES, SyncedTable
+
+
+class LocalDatabaseError(Exception):
+    """Something went wrong reading the warehouse database.
+
+    Kept apart from the cloud's failures on purpose. This service reads one
+    machine and writes another, and a single handler covering both once
+    reported a missing local table as "cannot reach the cloud replica" —
+    which sends somebody to debug the wrong machine.
+    """
+
+
+class CloudDatabaseError(Exception):
+    """Something went wrong reaching or writing the cloud replica."""
 
 log = logging.getLogger("sync")
 
@@ -115,6 +130,41 @@ class Sync:
                 cur.execute("SET default_transaction_read_only = on")
         return self.local
 
+    def reading_local(self, action):
+        """Run something against the warehouse database, tagging failures.
+
+        Anything that goes wrong in here is the local machine's problem,
+        never the cloud's.
+        """
+        try:
+            return action()
+        except psycopg.Error as exc:
+            self.drop_local()
+            raise LocalDatabaseError(
+                explain(exc, database="The warehouse database")
+            ) from exc
+
+    def writing_cloud(self, action):
+        """Run something against the cloud replica, tagging failures."""
+        try:
+            return action()
+        except psycopg.Error as exc:
+            raise CloudDatabaseError(
+                explain(
+                    exc,
+                    database="The cloud replica",
+                    command=CLOUD_MIGRATIONS_COMMAND,
+                )
+            ) from exc
+
+    def drop_local(self) -> None:
+        try:
+            if self.local is not None:
+                self.local.close()
+        except psycopg.Error:
+            pass
+        self.local = None
+
     def cloud_connection(self) -> psycopg.Connection:
         if self.cloud is None or self.cloud.closed:
             self.cloud = psycopg.connect(self.cloud_dsn, autocommit=False)
@@ -135,7 +185,7 @@ class Sync:
         if table in self.columns:
             return self.columns[table], self.keys[table]
 
-        conn = self.local_connection()
+        conn = self.reading_local(self.local_connection)
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT column_name FROM information_schema.columns
@@ -210,7 +260,7 @@ class Sync:
             order=order,
         )
 
-        conn = self.local_connection()
+        conn = self.reading_local(self.local_connection)
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(query, (cursor_value, BATCH_ROWS))
             rows = cur.fetchall()
@@ -330,23 +380,33 @@ class Sync:
     # -- The loop -----------------------------------------------------------
 
     def sync_table(self, table: SyncedTable) -> TableProgress:
-        conn = self.cloud_connection()
-        with conn.cursor() as cur:
-            position = self.read_cursor(cur, table.name)
-        conn.rollback()
+        def read_position():
+            conn = self.cloud_connection()
+            with conn.cursor() as cur:
+                found = self.read_cursor(cur, table.name)
+            conn.rollback()
+            return found
+
+        position = self.writing_cloud(read_position)
 
         if position is None:
             cursor_value = 0 if table.by_id else NEVER_SYNCED
         else:
             cursor_value = position[0] if table.by_id else position[1]
 
-        rows = self.read_batch(table, cursor_value)
+        rows = self.reading_local(lambda: self.read_batch(table, cursor_value))
         if not rows:
             return TableProgress(rows=0, caught_up=True)
 
         try:
-            self.send_batch(table, rows)
-        except psycopg.errors.ForeignKeyViolation as exc:
+            self.writing_cloud(lambda: self.send_batch(table, rows))
+        except CloudDatabaseError as wrapped:
+            # A foreign key violation is not an outage: a row arrived before
+            # the row it points at. Unwrap it so the caller below can tell
+            # the two apart.
+            if not isinstance(wrapped.__cause__, psycopg.errors.ForeignKeyViolation):
+                raise
+            exc = wrapped.__cause__
             # A row arrived before the row it points at — the parent is in a
             # table this cycle has not reached, or in a later batch. Leave
             # the cursor where it is and try again next cycle, by which time
@@ -386,7 +446,7 @@ class Sync:
 
         while not self.stopping:
             try:
-                self.check_cloud_schema()
+                self.writing_cloud(self.check_cloud_schema)
                 caught_up = self.run_once()
                 self.cycles += 1
 
@@ -412,16 +472,31 @@ class Sync:
                 time.sleep(delay)
                 delay = min(delay * 2, RETRY_MAX_S)
 
-            except psycopg.Error as exc:
-                # The warehouse does not care. Nothing local depends on this
-                # succeeding, so it is a warning and a retry, not an error.
-                # Postgres errors run to many lines; the first says what
-                # happened.
+            except LocalDatabaseError as exc:
+                # The warehouse's own database, not the cloud's. Saying
+                # "cloud" here would send somebody to the wrong machine.
+                if not announced_outage:
+                    log.error(
+                        "cannot read the warehouse database: %s\nSync is stalled "
+                        "until this is fixed. The warehouse itself is unaffected.",
+                        exc,
+                    )
+                    announced_outage = True
+                # The local connection is already gone. Drop the cloud one
+                # too: a local outage can last a long time, and an idle
+                # connection held across it is likely to be dead anyway.
+                self.drop_cloud()
+                time.sleep(delay)
+                delay = min(delay * 2, RETRY_MAX_S)
+
+            except CloudDatabaseError as exc:
+                # Nothing local depends on this succeeding, so it is a
+                # warning and a retry, not an error.
                 if not announced_outage:
                     log.warning(
-                        "cannot reach the cloud replica (%s). The warehouse is "
+                        "cannot reach the cloud replica: %s\nThe warehouse is "
                         "unaffected; retrying, and nothing is lost in the meantime.",
-                        str(exc).strip().splitlines()[0],
+                        exc,
                     )
                     announced_outage = True
                 self.drop_cloud()
