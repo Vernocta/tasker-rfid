@@ -38,6 +38,7 @@ import psycopg
 from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
+from ...db_errors import explain
 from .transitions import (
     DISPATCHED,
     NO_SESSION,
@@ -182,7 +183,12 @@ class StateEngine:
             try:
                 return action(self.connect())
             except psycopg.Error as exc:
-                log.error("%s failed (%s); retrying in %.0fs", what, exc, delay)
+                log.error(
+                    "%s failed: %s\nRetrying in %.0fs.",
+                    what,
+                    explain(exc, database="The warehouse database"),
+                    delay,
+                )
                 try:
                     if self.conn is not None:
                         self.conn.rollback()

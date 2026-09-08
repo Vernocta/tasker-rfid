@@ -47,6 +47,7 @@ from ...config import (
     load_filters,
     portal_by_antenna,
 )
+from ...db_errors import explain
 from .direction import crossings_from_events, direction_for_window
 from .grouping import (
     Observation,
@@ -169,7 +170,12 @@ class Debouncer:
             try:
                 return action(self.connect())
             except psycopg.Error as exc:
-                log.error("%s failed (%s); retrying in %.0fs", what, exc, delay)
+                log.error(
+                    "%s failed: %s\nRetrying in %.0fs.",
+                    what,
+                    explain(exc, database="The warehouse database"),
+                    delay,
+                )
                 try:
                     if self.conn is not None:
                         self.conn.close()

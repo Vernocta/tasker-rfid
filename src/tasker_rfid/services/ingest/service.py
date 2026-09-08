@@ -43,6 +43,7 @@ import paho.mqtt.client as mqtt
 import psycopg
 from dotenv import load_dotenv
 
+from ...db_errors import explain
 from .validation import GateEvent, InvalidRead, RawRead, parse_gate_event, parse_read
 
 log = logging.getLogger("ingest")
@@ -267,9 +268,10 @@ class Ingest:
                 return True
             except psycopg.Error as exc:
                 log.error(
-                    "database write failed (%s); %d message(s) held, retrying in %.0fs. "
-                    "Nothing is acknowledged, so nothing is lost.",
-                    exc,
+                    "cannot write to the warehouse database: %s\n"
+                    "%d message(s) held, retrying in %.0fs. Nothing is "
+                    "acknowledged, so nothing is lost.",
+                    explain(exc, database="The warehouse database"),
                     total,
                     delay,
                 )

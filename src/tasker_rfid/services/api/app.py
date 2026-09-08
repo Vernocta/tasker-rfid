@@ -14,13 +14,16 @@ or on its own during development:
     uv run tasker-api
 """
 
+import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-
+import psycopg
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from ...db_errors import SCHEMA_IS_BEHIND, explain
 from . import db
 from .routers import (
     anomalies,
@@ -102,6 +105,8 @@ async def lifespan(_app: FastAPI):
     db.close_pool()
 
 
+log = logging.getLogger("api")
+
 app = FastAPI(
     title="Tasker RFID Stock Control",
     description=DESCRIPTION,
@@ -121,6 +126,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(psycopg.Error)
+async def database_is_unavailable(request: Request, exc: psycopg.Error) -> JSONResponse:
+    """Say what is wrong and what to do, rather than returning a bare 500.
+
+    The commonest cause is migrations that have not been run after a pull.
+    A stack trace in the log does not tell whoever is standing at the dock
+    anything they can act on.
+    """
+    message = explain(exc, database="The warehouse database")
+    status = 503 if isinstance(exc, SCHEMA_IS_BEHIND) else 500
+    log.error("request to %s failed: %s", request.url.path, message)
+    return JSONResponse(status_code=status, content={"detail": message})
+
 
 for router in (
     stock.router,
