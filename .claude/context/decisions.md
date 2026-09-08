@@ -14,7 +14,7 @@ All active unless marked otherwise.
 
 **The TID is the primary key. Nothing is written to the tag.** Factory-locked, globally unique. Consequences: no RFID encoder needed (saves US$3–5k), generic tag stock works, double-counting becomes structurally impossible, lot tracking is free.
 
-**Containers, not cartons.** A box, pallet or tote are all containers; they nest via `parent_id`. This makes box-level vs pallet-level vs hybrid a **config choice (`mode:`)** rather than a rewrite — which is why the pending RF test cannot invalidate the build.
+**Containers, not cartons.** A box, pallet or tote are all containers; they nest via `parent_id`. **The schema supports all three topologies — box-level, pallet-level, hybrid — without a migration.** Switching between them is a code change, not a config change: the `mode:` key exists in `config/tasker.yaml` but nothing reads it, and it is marked as such in the file. What the RF test cannot do is force a schema rewrite.
 
 **State, not counts.** `REGISTERED → IN_STOCK → DISPATCHED`. Re-reads are idempotent no-ops. This is what kills the parked-tag failure mode (2,000+ raw reads → 1 movement, proven by test).
 
@@ -39,10 +39,19 @@ All active unless marked otherwise.
 | IR beams named `INNER`/`OUTER`, not A/B | Direction reads straight off the data: inner-first = leaving. |
 | The mockup's CERRADO/ABIERTO header buttons were dropped | They were artboard state switches. On the real screen the dock is open because the warehouse says so; a button that appeared to toggle it would lie. |
 
+## Settings that were removed rather than wired up
+
+`direction_mode` and `require_session` were deleted from `config/tasker.yaml`
+and SPEC §8. Neither was ever read. A portal is gated if it has a `gate_id`,
+which makes `direction_mode` redundant; and a dispatch **always** requires an
+open session (§2.5), so a key implying that could be switched off was a hazard
+dressed as a setting. `mode` and the `rf:` block were kept — both are genuine
+pending decisions — but marked in the file as not yet read.
+
 ## Reversed / corrected
 
 **SPEC §3.1's stock query had `AND c.parent_id IS NULL`.** Wrong in hybrid mode: boxes carry contents and have a parent, so the guard filtered out exactly the rows holding the quantities — all palletised stock was invisible. The consumption query never had the guard, so the spec contradicted itself. Removed; SPEC corrected.
 
 ## Tables added beyond SPEC §3 (all additive)
 
-`debouncer_cursor`, `gate_events`, `sync_cursor`, and `updated_at` columns on nine mutable tables. SPEC §3 has been brought back in line and verified by executing its DDL into a scratch schema.
+`debouncer_cursor`, `gate_events`, `sync_cursor`, `reason` and `operator` on `movements` (for manual corrections), and `updated_at` columns on nine mutable tables. SPEC §3 has been brought back in line and verified by executing its DDL into a scratch schema.

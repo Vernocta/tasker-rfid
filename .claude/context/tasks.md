@@ -15,18 +15,26 @@
 3. **Fresh-machine smoke test** — clone, up, migrate, seed, simulate, confirm on the dashboard. Catches anything that only works because the dev laptop has something installed.
 4. **Real seed data** — replace placeholder SKUs and customers.
 
-## SMALL, ANY TIME
-
-- Fix the sync worker's error message so a local database fault is not reported as a cloud outage (feedback #13)
-- Decide, per setting, whether the four unread `tasker.yaml` keys get wired up or labelled not-yet-used (feedback #14)
-- Record the 902–928 MHz band in SPEC §11 (feedback #15)
-
 ## LATER
 
 5. Step 10 — real reader integration
 6. Neon cloud database
 7. Dashboard iteration based on watching someone actually use it
 8. Serve the dashboard to a dock screen (`API_BASE_URL` must be reachable from that machine)
+
+## DONE SINCE THE LAST UPDATE
+
+- Sync reports local faults as local, cloud faults as cloud (#13)
+- Unread config settings removed or marked (#14)
+- 902–928 MHz recorded in SPEC §11 (#15)
+- `decisions.md` wording on `mode` corrected (#16)
+- Every service names `alembic upgrade head` when the schema is behind (#10)
+- Docker image rebuilds on a code change without re-downloading dependencies (#17)
+
+## SMALL, ANY TIME
+
+- Route a message on the bare `tasker/reads` topic to the read parser rather than the gate parser, so a hand-published read is rejected for the right reason (#18)
+- Make `test_new_rows_reach_the_cloud` wait for the container's *status* to reach the cloud rather than its row, so it stops flaking under a sync backlog (#19)
 
 ## BLOCKED
 

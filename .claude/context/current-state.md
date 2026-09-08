@@ -1,6 +1,6 @@
 # Current state
 
-_Last updated: after the context bundle was split and audited against the code._
+_Last updated: after the context audit's findings were fixed._
 
 ## Working
 
@@ -10,7 +10,9 @@ _Last updated: after the context bundle was split and audited against the code._
 - All nine SPEC §7 failure modes have tests
 - Five dashboard screens, bilingual, styled, zero external requests verified
 - Cloud sync verified under two mid-flight outages: 79,037 = 79,037 rows, zero duplicates, matching id checksum
-- Context bundle split into `.claude/context/` and audited against the code (see feedback #13–#16)
+- Context bundle split into `.claude/context/`, audited against the code, and every finding fixed (feedback #13–#16)
+- Every service now names the migration command when the schema is behind, rather than retrying against an error nobody can act on (feedback #10)
+- Verified live: hiding a local table makes sync say *warehouse*, not *cloud*; ingest holds its message unacknowledged and inserts it once the table is back; the API answers 503 with the command to run
 
 ## Verified numbers worth keeping
 
@@ -24,15 +26,18 @@ _Last updated: after the context bundle was split and audited against the code._
 
 ## Config that is written but not read
 
-`config/tasker.yaml` documents four settings nothing consumes. Changing them
-today does nothing:
+Two settings remain in `config/tasker.yaml` that nothing consumes. Both are
+real pending decisions, so they are kept and **marked in the file itself**:
 
-| Setting | Reality |
+| Setting | When it becomes live |
 |---|---|
-| `mode: hybrid` | Never read. The container model does support all three, but switching is a code change, not a config change. |
-| `portals.*.direction_mode` | Never read. A portal is gated if it has a `gate_id`. |
-| `portals.exit.require_session` | Never read. A session is **always** required for a dispatch. |
-| `rf.tx_power_dbm`, `rf.session` | Never read. Reader settings, for hardware that does not exist yet. |
+| `mode: hybrid` | When the RF test decides the topology. Switching is a code change, not a config change. |
+| `rf.tx_power_dbm`, `rf.session` | Build step 10, when there is a physical reader. |
+
+`direction_mode` and `require_session` were deleted from both the config and
+SPEC §8: neither was read, and `require_session` in particular implied a
+dispatch could be allowed without a customer, which is the one thing the
+system must never do.
 
 ## Not started
 
