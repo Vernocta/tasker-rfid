@@ -1,8 +1,16 @@
 # Runtime tuning. This file is SPEC.md section 8, verbatim.
 # Change values here, not in code.
 
+# NOT YET READ BY ANY CODE. The schema supports all three topologies
+# without a migration -- containers nest, so a box, a pallet or both can
+# carry the tags -- but switching between them is a code change, not a
+# config change. Recorded here because the RF test decides it (SPEC.md 11);
+# wire it up when that answer arrives.
 mode: hybrid                # box_level | pallet_level | hybrid
 
+# NOT YET READ BY ANY CODE. These configure a physical reader, and there
+# is no reader yet -- the simulator models its behaviour instead. They go
+# live at build step 10.
 rf:
   tx_power_dbm: 25
   session: 2
@@ -15,12 +23,9 @@ filters:
 portals:
   entrance:
     antennas: [1, 2]
-    direction_mode: state_machine
   exit:
     antennas: [3, 4]
-    direction_mode: ir_gated
     ir_gate_timeout_ms: 3000
-    require_session: true
     # The IR beam gate at this portal. Two beams a few centimetres apart:
     # INNER faces the warehouse, OUTER faces the street. Breaking INNER
     # then OUTER means something is leaving. The entrance has no gate --

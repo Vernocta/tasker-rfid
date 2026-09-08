@@ -482,6 +482,16 @@ because a report is usually asked for over a month or a quarter.
 
 ## 8. Configuration
 
+Two settings below are recorded but **not yet read by any code**: `mode`,
+because the RF test decides it (section 11), and the `rf:` block, because
+there is no physical reader until build step 10. They are marked in the
+file itself.
+
+`direction_mode` and `require_session` were removed. A portal is gated if it
+has a `gate_id`, which makes `direction_mode` redundant; and a dispatch
+*always* requires an open session (section 2.5), so a key implying that
+could be switched off was a hazard rather than a setting.
+
 ```yaml
 mode: hybrid                # box_level | pallet_level | hybrid
 
@@ -497,12 +507,10 @@ filters:
 portals:
   entrance:
     antennas: [1, 2]
-    direction_mode: state_machine
   exit:
     antennas: [3, 4]
-    direction_mode: ir_gated
     ir_gate_timeout_ms: 3000
-    require_session: true
+    gate_id: GATE-EXIT
 
 health:
   no_read_alert_hours: 4
@@ -541,6 +549,12 @@ health:
 ---
 
 ## 11. Open items (pending physical test)
+
+**Fixed by regulation, not open:** Argentina is ITU Region 2, so every tag,
+reader and antenna must be **902–928 MHz (FCC band)**. Never 865–868 MHz
+(EU). EU-band tags do work at short range in Region 2, which is the danger:
+they underperform without obviously failing. Confirm the band on any quote
+before ordering.
 
 - `mode`: box_level / pallet_level / hybrid — decided by RF read-rate test
 - `tag_class` per SKU family — decided by read-distance test
